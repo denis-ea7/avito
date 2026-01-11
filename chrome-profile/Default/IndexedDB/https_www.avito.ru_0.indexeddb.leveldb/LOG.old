@@ -1,0 +1,13 @@
+2025/09/08-17:18:46.431 19db1c3 Reusing MANIFEST /Users/denisevseev/bybit/avito/chrome-profile/Default/IndexedDB/https_www.avito.ru_0.indexeddb.leveldb/MANIFEST-000001
+2025/09/08-17:18:46.431 19db1c3 Recovering log #691
+2025/09/08-17:18:46.433 19db1c3 Reusing old log /Users/denisevseev/bybit/avito/chrome-profile/Default/IndexedDB/https_www.avito.ru_0.indexeddb.leveldb/000691.log 
+2025/09/08-17:18:46.494 19db1c3 Level-0 table #696: started
+2025/09/08-17:18:46.496 19db1c3 Level-0 table #696: 16734 bytes OK
+2025/09/08-17:18:46.497 19db1c3 Delete type=0 #691
+2025/09/08-17:18:46.502 19db1c3 Manual compaction at level-0 from '\x00\xf7\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\xf8\x00\x00\x00' @ 0 : 0; will stop at '\x00\xf7\x00\x00\x05' @ 9358 : 1
+2025/09/08-17:18:46.502 19db1c3 Compacting 1@0 + 1@1 files
+2025/09/08-17:18:46.504 19db1c3 Generated table #697@0: 171 keys, 3063 bytes
+2025/09/08-17:18:46.504 19db1c3 Compacted 1@0 + 1@1 files => 3063 bytes
+2025/09/08-17:18:46.505 19db1c3 compacted to: files[ 0 1 1 0 0 0 0 ]
+2025/09/08-17:18:46.505 19db1c3 Delete type=2 #696
+2025/09/08-17:18:46.506 19db1c3 Manual compaction at level-0 from '\x00\xf7\x00\x00\x05' @ 9358 : 1 .. '\x00\xf8\x00\x00\x00' @ 0 : 0; will stop at (end)

@@ -1,0 +1,14 @@
+2025/09/08-17:16:53.973 19d966a Reusing MANIFEST /Users/denisevseev/bybit/avito/chrome-profile/Default/IndexedDB/https_www.cian.ru_0.indexeddb.leveldb/MANIFEST-000001
+2025/09/08-17:16:53.973 19d966a Recovering log #1277
+2025/09/08-17:16:53.973 19d966a Reusing old log /Users/denisevseev/bybit/avito/chrome-profile/Default/IndexedDB/https_www.cian.ru_0.indexeddb.leveldb/001277.log 
+2025/09/08-17:16:53.973 19d966a Delete type=2 #1275
+2025/09/08-17:16:53.993 19d966a Level-0 table #1282: started
+2025/09/08-17:16:53.993 19d966a Level-0 table #1282: 1415 bytes OK
+2025/09/08-17:16:53.995 19d966a Delete type=0 #1277
+2025/09/08-17:16:53.995 19d966a Manual compaction at level-0 from ' T\x01\x00\x00\x00' @ 72057594037927935 : 1 .. ' U\x01\x00\x00\x00' @ 0 : 0; will stop at ' T\x01\x01\x03\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 30667 : 1
+2025/09/08-17:16:53.995 19d966a Compacting 1@0 + 1@1 files
+2025/09/08-17:16:53.997 19d966a Generated table #1283@0: 478 keys, 11007 bytes
+2025/09/08-17:16:53.997 19d966a Compacted 1@0 + 1@1 files => 11007 bytes
+2025/09/08-17:16:53.998 19d966a compacted to: files[ 0 1 1 0 0 0 0 ]
+2025/09/08-17:16:53.998 19d966a Delete type=2 #1282
+2025/09/08-17:16:53.998 19d966a Manual compaction at level-0 from ' T\x01\x01\x03\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 30667 : 1 .. ' U\x01\x00\x00\x00' @ 0 : 0; will stop at (end)
