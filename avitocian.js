@@ -230,8 +230,8 @@ async function launchPuppeteer(siteType) {
   if (chromePath) launchOptions.executablePath = chromePath;
   const browser = await puppeteer.launch(launchOptions);
   const page = await browser.newPage();
-  await page.setDefaultTimeout(60000).catch(() => {});
-  await page.setDefaultNavigationTimeout(60000).catch(() => {});
+  page.setDefaultTimeout(60000);
+  page.setDefaultNavigationTimeout(60000);
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   await setPageFingerprint(page);
   return { browser, page };
