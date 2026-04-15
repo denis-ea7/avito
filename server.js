@@ -46,34 +46,49 @@ function startBot() {
   botProcess = spawn(process.execPath, [path.join(__dirname, 'avitocian.js')], {
     cwd: __dirname,
     env,
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe']
   });
   startedAt = new Date().toISOString();
   pushLog(`Бот запущен, PID ${botProcess.pid}`);
   botProcess.stdout.on('data', (chunk) => pushLog(chunk.toString()));
   botProcess.stderr.on('data', (chunk) => pushLog(chunk.toString()));
+  const current = botProcess;
   botProcess.on('exit', (code, signal) => {
     pushLog(`Бот остановлен, code=${code ?? ''} signal=${signal ?? ''}`);
-    botProcess = null;
-    startedAt = null;
+    if (botProcess === current) {
+      botProcess = null;
+      startedAt = null;
+    }
   });
   return botStatus();
+}
+
+function killBotTree(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+  } catch (e) {
+    try {
+      process.kill(pid, signal);
+    } catch (_) {}
+  }
 }
 
 function stopBot() {
   if (!botStatus().running) return Promise.resolve(botStatus());
   const current = botProcess;
+  const pid = current.pid;
   return new Promise((resolve) => {
     const finish = () => resolve(botStatus());
     const killTimer = setTimeout(() => {
-      if (current.exitCode === null) current.kill('SIGKILL');
-    }, 8000);
+      if (current.exitCode === null) killBotTree(pid, 'SIGKILL');
+    }, 1500);
     killTimer.unref();
     current.once('exit', () => {
       clearTimeout(killTimer);
       finish();
     });
-    current.kill('SIGTERM');
+    killBotTree(pid, 'SIGTERM');
   });
 }
 

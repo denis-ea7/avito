@@ -129,7 +129,8 @@ async function sendToTelegram(bot, chatId, message) {
     if (!chatId) throw new Error('TG_CHAT_ID пустой');
     const chatIds = String(chatId).split(',').map((id) => id.trim()).filter(Boolean);
     for (const id of chatIds) {
-      await bot.sendMessage(id, message, { parse_mode: 'HTML', disable_web_page_preview: false });
+      const sent = await bot.sendMessage(id, message, { parse_mode: 'HTML', disable_web_page_preview: false });
+      console.log(`Telegram доставлено: chat ${String(sent.chat.id).slice(-4)}, message ${sent.message_id}`);
     }
   } catch (e) {
     const apiDescription = e?.response?.body?.description || e?.response?.description;
