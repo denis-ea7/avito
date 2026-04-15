@@ -22,7 +22,7 @@ const SKIP_TELEGRAM = process.env.SKIP_TELEGRAM === '1';
 const TELEGRAM_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TG_CHAT_ID || '';
 const PROXY_MODE = process.env.PROXY_MODE || 'off';
-const USER_DATA_DIR = path.join(__dirname, 'chrome-profile');
+const BASE_USER_DATA_DIR = path.join(__dirname, 'chrome-profile');
 const RUN_INTERVAL_MS_MIN = 50000;
 const RUN_INTERVAL_MS_MAX = 100000;
 const PAGE_JITTER_MIN = 12000;
@@ -198,6 +198,9 @@ async function safeGoto(page, url, readySelector) {
 }
 
 async function launchPuppeteer(siteType) {
+  const profileDir = process.env.PERSISTENT_CHROME_PROFILE === '1'
+    ? BASE_USER_DATA_DIR
+    : fs.mkdtempSync(path.join(os.tmpdir(), `avito-${siteType}-${process.pid}-`));
   const launchArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -222,7 +225,7 @@ async function launchPuppeteer(siteType) {
   }
   const launchOptions = {
     headless: 'new',
-    userDataDir: USER_DATA_DIR,
+    userDataDir: profileDir,
     args: launchArgs,
     protocolTimeout: 120000
   };
@@ -234,7 +237,14 @@ async function launchPuppeteer(siteType) {
   page.setDefaultNavigationTimeout(60000);
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   await setPageFingerprint(page);
-  return { browser, page };
+  return { browser, page, profileDir };
+}
+
+async function closePuppeteer(browser, profileDir) {
+  await browser.close().catch(() => {});
+  if (profileDir && profileDir !== BASE_USER_DATA_DIR) {
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
 }
 
 async function launchPlaywright(siteType) {
@@ -386,12 +396,12 @@ async function parseDomclick(page, target, filters, sentIds, bot) {
 async function processTarget(target, filters, sentIds, bot) {
   console.log(`Обработка: ${target.label}`);
   if (target.type === 'avito' || target.type === 'cian') {
-    const { browser, page } = await launchPuppeteer(target.type);
+    const { browser, page, profileDir } = await launchPuppeteer(target.type);
     try {
       if (target.type === 'avito') return await parseAvito(page, target, filters, sentIds, bot);
       return await parseCian(page, target, filters, sentIds, bot);
     } finally {
-      await browser.close().catch(() => {});
+      await closePuppeteer(browser, profileDir);
     }
   }
   const { browser, context, page } = await launchPlaywright(target.type);

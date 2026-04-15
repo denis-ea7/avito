@@ -15,6 +15,7 @@ const logs = [];
 let botProcess = null;
 let startedAt = null;
 let stopping = false;
+let transition = Promise.resolve();
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -60,12 +61,25 @@ function startBot() {
 }
 
 function stopBot() {
-  if (!botStatus().running) return botStatus();
-  botProcess.kill('SIGTERM');
-  setTimeout(() => {
-    if (botStatus().running) botProcess.kill('SIGKILL');
-  }, 8000).unref();
-  return botStatus();
+  if (!botStatus().running) return Promise.resolve(botStatus());
+  const current = botProcess;
+  return new Promise((resolve) => {
+    const finish = () => resolve(botStatus());
+    const killTimer = setTimeout(() => {
+      if (current.exitCode === null) current.kill('SIGKILL');
+    }, 8000);
+    killTimer.unref();
+    current.once('exit', () => {
+      clearTimeout(killTimer);
+      finish();
+    });
+    current.kill('SIGTERM');
+  });
+}
+
+function queueTransition(task) {
+  transition = transition.then(task, task);
+  return transition;
 }
 
 app.get('/api/status', (req, res) => {
@@ -77,23 +91,27 @@ app.get('/api/config', (req, res) => {
   res.json({ config, targets: buildSearchTargets(config) });
 });
 
-app.put('/api/config', (req, res) => {
+app.put('/api/config', async (req, res) => {
   const wasRunning = botStatus().running;
   const config = writeConfig(CONFIG_FILE, req.body || {});
   pushLog('Фильтры сохранены');
   if (wasRunning) {
-    stopBot();
-    setTimeout(() => startBot(), 1000).unref();
+    await queueTransition(async () => {
+      await stopBot();
+      return startBot();
+    });
   }
   res.json({ config, restarted: wasRunning, targets: buildSearchTargets(config) });
 });
 
-app.post('/api/bot/start', (req, res) => {
-  res.json(startBot());
+app.post('/api/bot/start', async (req, res) => {
+  const status = await queueTransition(async () => startBot());
+  res.json(status);
 });
 
-app.post('/api/bot/stop', (req, res) => {
-  res.json(stopBot());
+app.post('/api/bot/stop', async (req, res) => {
+  const status = await queueTransition(async () => stopBot());
+  res.json(status);
 });
 
 app.use(express.static(DIST_DIR));
