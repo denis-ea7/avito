@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -93,26 +93,31 @@ function App() {
   const [targets, setTargets] = useState([]);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const dirtyRef = useRef(false);
 
   const roomOptions = useMemo(() => [1, 2, 3, 4, 5].map((room) => [room, `${room}`]), []);
 
-  const loadStatus = () => {
+  const loadStatus = ({ syncConfig = false } = {}) => {
     toRequest('/api/status')
       .then((data) => {
         setStatus(data);
-        setConfig(data.config || defaultConfig);
-        setTargets(data.targets || []);
+        if (syncConfig || !dirtyRef.current) {
+          setConfig(data.config || defaultConfig);
+          setTargets(data.targets || []);
+          dirtyRef.current = false;
+        }
       })
       .catch((error) => setMessage(`Ошибка статуса: ${error.message}`));
   };
 
   useEffect(() => {
-    loadStatus();
+    loadStatus({ syncConfig: true });
     const timer = window.setInterval(loadStatus, 5000);
     return () => window.clearInterval(timer);
   }, []);
 
   const updateConfig = (key, value) => {
+    dirtyRef.current = true;
     setConfig((current) => ({ ...current, [key]: value }));
   };
 
@@ -126,6 +131,7 @@ function App() {
       });
       setConfig(data.config);
       setTargets(data.targets || []);
+      dirtyRef.current = false;
       setMessage(data.restarted ? 'Фильтры сохранены, бот перезапускается' : 'Фильтры сохранены');
       loadStatus();
     } catch (error) {
