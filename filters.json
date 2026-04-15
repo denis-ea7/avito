@@ -1,0 +1,32 @@
+{
+  "enabled": true,
+  "city": "Москва",
+  "query": "",
+  "sources": [
+    "avito",
+    "cian",
+    "yandex",
+    "domclick"
+  ],
+  "propertyTypes": [
+    "room",
+    "flat"
+  ],
+  "rooms": [
+    1
+  ],
+  "priceMin": 14000,
+  "priceMax": 40000,
+  "areaMin": "",
+  "areaMax": "",
+  "metroMinutesMin": "",
+  "metroMinutesMax": 30,
+  "metroMode": "any",
+  "buildYearMin": 1995,
+  "buildYearMax": "",
+  "floorMin": "",
+  "floorMax": "",
+  "floorsTotalMin": "",
+  "floorsTotalMax": "",
+  "autostart": true
+}

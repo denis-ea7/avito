@@ -1,66 +1,56 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 SERVER_HOST="${SERVER_HOST:-121.127.37.208}"
 SERVER_USER="${SERVER_USER:-root}"
-REMOTE_DIR="${REMOTE_DIR:-/root/realty-parser/avito}"
-SSH_KEY="${SSH_KEY:-${HOME}/.ssh/id_ed25519}"
+REMOTE_DIR="${REMOTE_DIR:-/root/avito}"
+SSH_KEY="${SSH_KEY:-}"
+PORT="${PORT:-4076}"
 
-FILES_TO_COPY=(
-  "avito-cian.js"
-  "package.json"
-  "package-lock.json"
-  "ecosystem.config.js"
-)
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
 
-echo "🚀 Начало полного развертывания в $REMOTE_DIR..."
-
-if [[ ! -f "${SSH_KEY}" ]]; then
-  echo "❌ SSH ключ не найден: ${SSH_KEY}"
-  exit 1
+if [[ -n "$SSH_KEY" ]]; then
+  SSH_CMD=(ssh -i "$SSH_KEY" "${SSH_OPTS[@]}")
+  SCP_CMD=(scp -i "$SSH_KEY" "${SSH_OPTS[@]}")
+else
+  SSH_CMD=(ssh "${SSH_OPTS[@]}")
+  SCP_CMD=(scp "${SSH_OPTS[@]}")
 fi
 
-SSH_BASE_OPTS=(-o "StrictHostKeyChecking=no" -o "PasswordAuthentication=no")
-SSH_CMD=(ssh -i "${SSH_KEY}" "${SSH_BASE_OPTS[@]}")
-SCP_CMD=(scp -i "${SSH_KEY}" "${SSH_BASE_OPTS[@]}")
-
-echo "🔐 Проверяю доступ по SSH..."
-if ! "${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "echo ok" >/dev/null 2>&1; then
-  echo "❌ Не получилось подключиться по SSH: ${SERVER_USER}@${SERVER_HOST}"
-  exit 1
+if [[ -n "${SSHPASS:-}" ]]; then
+  SSH_CMD=(sshpass -e "${SSH_CMD[@]}")
+  SCP_CMD=(sshpass -e "${SCP_CMD[@]}")
 fi
 
-echo "📁 Создание директории $REMOTE_DIR на сервере..."
-"${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "mkdir -p $REMOTE_DIR"
+TMP_ARCHIVE="$(mktemp -t avito-deploy.XXXXXX.tar.gz)"
+trap 'rm -f "$TMP_ARCHIVE"' EXIT
 
-echo "📤 Копирование файлов на сервер..."
-for file in "${FILES_TO_COPY[@]}"; do
-  if [ -f "$file" ]; then
-    "${SCP_CMD[@]}" "$file" "${SERVER_USER}@${SERVER_HOST}:${REMOTE_DIR}/"
-    echo "  - $file скопирован."
-  else
-    echo "  - ⚠️  Файл $file не найден в папке avito/, пропуск."
-  fi
-done
+tar \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  --exclude='dist' \
+  --exclude='.env' \
+  --exclude='chrome-profile' \
+  --exclude='sent-ids.txt' \
+  --exclude='.DS_Store' \
+  -czf "$TMP_ARCHIVE" .
 
-echo "⚙️  Настройка сервера и запуск приложения..."
-"${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" << EOF
-  set -e
-  echo "  - Переход в директорию $REMOTE_DIR"
-  cd $REMOTE_DIR
+"${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '$REMOTE_DIR'"
+"${SCP_CMD[@]}" "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_HOST}:/tmp/avito-deploy.tar.gz"
 
-  echo "  - Установка зависимостей проекта..."
-  npm install
+"${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "
+set -euo pipefail
+cd '$REMOTE_DIR'
+tar -xzf /tmp/avito-deploy.tar.gz -C '$REMOTE_DIR'
+rm -f /tmp/avito-deploy.tar.gz
+PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
+npm run build
+if screen -ls | grep -q '[.]avito'; then
+  screen -S avito -X quit || true
+fi
+pm2 delete avito-web >/dev/null 2>&1 || true
+PORT='$PORT' pm2 start ecosystem.config.js
+pm2 save
+"
 
-  echo "  - (Пропущено) Установка браузера (уже должен быть)"
-
-  echo "  - Запуск/перезагрузка приложения через pm2..."
-  pm2 reload ecosystem.config.js --name realty-parser || pm2 start ecosystem.config.js
-
-  echo "  - Сохранение списка процессов pm2..."
-  pm2 save
-EOF
-
-echo "✅ Развертывание завершено!"
-echo "🎉 Ваш бот должен работать из папки $REMOTE_DIR."
-echo "👀 Чтобы посмотреть логи, используйте: pm2 logs realty-parser"
+echo "http://${SERVER_HOST}:${PORT}"
