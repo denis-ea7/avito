@@ -25,15 +25,7 @@ fi
 TMP_ARCHIVE="$(mktemp -t avito-deploy.XXXXXX.tar.gz)"
 trap 'rm -f "$TMP_ARCHIVE"' EXIT
 
-tar \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='dist' \
-  --exclude='.env' \
-  --exclude='chrome-profile' \
-  --exclude='sent-ids.txt' \
-  --exclude='.DS_Store' \
-  -czf "$TMP_ARCHIVE" .
+git archive --format=tar.gz -o "$TMP_ARCHIVE" HEAD
 
 "${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '$REMOTE_DIR'"
 "${SCP_CMD[@]}" "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_HOST}:/tmp/avito-deploy.tar.gz"
