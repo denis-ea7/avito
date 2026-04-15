@@ -288,11 +288,12 @@ async function launchPlaywright(siteType) {
 }
 
 function formatMessage(label, ad) {
+  const desc = ad.desc && ad.desc.length > 1400 ? `${ad.desc.slice(0, 1400)}...` : ad.desc;
   return [
     `🏠 <b>${ad.title || label}</b>`,
     ad.price ? `💰 ${ad.price}` : '',
     ad.location ? `📍 ${ad.location}` : '',
-    ad.desc ? `\n${ad.desc}` : '',
+    desc ? `\n${desc}` : '',
     `🔗 ${ad.href}`
   ].filter(Boolean).join('\n');
 }
