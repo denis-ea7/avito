@@ -7,7 +7,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { readConfig, buildSearchTargets, matchesFilters } = require('./lib/filters');
+const { readConfig, buildSearchTargets, filterDecision } = require('./lib/filters');
 
 let playwright = null;
 try {
@@ -353,13 +353,20 @@ async function matchesAiFilter(ad, filters) {
   }
 }
 
-async function emitFirstMatching(label, source, ads, filters, sentIds, bot, propertyType) {
+async function emitFirstMatching(label, source, ads, filters, sentIds, bot, propertyType, enrichAd) {
+  let enrichedCount = 0;
   for (const ad of ads) {
     if (!ad?.href) continue;
     const id = extractListingId(source, ad.href);
     if (!id || sentIds.has(id)) continue;
-    const normalizedAd = { ...ad, propertyType };
-    if (!matchesFilters(normalizedAd, filters)) {
+    let normalizedAd = { ...ad, propertyType };
+    let decision = filterDecision(normalizedAd, filters);
+    if (((!decision.match && decision.detailsUseful) || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < 6) {
+      enrichedCount += 1;
+      normalizedAd = { ...(await enrichAd(ad)), propertyType };
+      decision = filterDecision(normalizedAd, filters);
+    }
+    if (!decision.match) {
       console.log(`Фильтр отклонил: ${label} ${id}`);
       continue;
     }
@@ -373,48 +380,34 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
   return false;
 }
 
-async function enrichPuppeteerAds(browser, ads, limit = 6) {
-  const result = [];
-  for (const ad of ads.slice(0, limit)) {
-    if (!ad.href) {
-      result.push(ad);
-      continue;
-    }
-    const page = await browser.newPage();
-    try {
-      await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(1200);
-      const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
-      result.push({ ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') });
-    } catch (_) {
-      result.push(ad);
-    } finally {
-      await page.close().catch(() => {});
-    }
+async function enrichPuppeteerAd(browser, ad) {
+  if (!ad.href) return ad;
+  const page = await browser.newPage();
+  try {
+    await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForTimeout(1200);
+    const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
+    return { ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') };
+  } catch (_) {
+    return ad;
+  } finally {
+    await page.close().catch(() => {});
   }
-  return result.concat(ads.slice(limit));
 }
 
-async function enrichPlaywrightAds(context, ads, limit = 6) {
-  const result = [];
-  for (const ad of ads.slice(0, limit)) {
-    if (!ad.href) {
-      result.push(ad);
-      continue;
-    }
-    const page = await context.newPage();
-    try {
-      await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(1200);
-      const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
-      result.push({ ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') });
-    } catch (_) {
-      result.push(ad);
-    } finally {
-      await page.close().catch(() => {});
-    }
+async function enrichPlaywrightAd(context, ad) {
+  if (!ad.href) return ad;
+  const page = await context.newPage();
+  try {
+    await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForTimeout(1200);
+    const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
+    return { ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') };
+  } catch (_) {
+    return ad;
+  } finally {
+    await page.close().catch(() => {});
   }
-  return result.concat(ads.slice(limit));
 }
 
 async function parseAvito(browser, page, target, filters, sentIds, bot) {
@@ -432,8 +425,7 @@ async function parseAvito(browser, page, target, filters, sentIds, bot) {
       return { href, title, price, location: text, desc: text };
     });
   }).catch(() => []);
-  ads = await enrichPuppeteerAds(browser, ads);
-  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType);
+  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad));
 }
 
 async function parseCian(browser, page, target, filters, sentIds, bot) {
@@ -447,8 +439,7 @@ async function parseCian(browser, page, target, filters, sentIds, bot) {
     const desc = card.querySelector('[data-name="Description"]')?.textContent?.trim() || card.innerText || '';
     return { href, title, price, location, desc };
   })).catch(() => []);
-  ads = await enrichPuppeteerAds(browser, ads);
-  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot, target.propertyType);
+  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad));
 }
 
 async function parseYandex(context, page, target, filters, sentIds, bot) {
@@ -475,8 +466,7 @@ async function parseYandex(context, page, target, filters, sentIds, bot) {
       };
     });
   }).catch(() => []);
-  ads = await enrichPlaywrightAds(context, ads);
-  return emitFirstMatching(target.label, 'yandex', ads, filters, sentIds, bot, target.propertyType);
+  return emitFirstMatching(target.label, 'yandex', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPlaywrightAd(context, ad));
 }
 
 async function parseDomclick(context, page, target, filters, sentIds, bot) {
@@ -499,8 +489,7 @@ async function parseDomclick(context, page, target, filters, sentIds, bot) {
       };
     });
   }).catch(() => []);
-  ads = await enrichPlaywrightAds(context, ads);
-  return emitFirstMatching(target.label, 'domclick', ads, filters, sentIds, bot, target.propertyType);
+  return emitFirstMatching(target.label, 'domclick', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPlaywrightAd(context, ad));
 }
 
 async function processTarget(target, filters, sentIds, bot) {
