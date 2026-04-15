@@ -11,24 +11,27 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
 
 if [[ -n "$SSH_KEY" ]]; then
   SSH_CMD=(ssh -i "$SSH_KEY" "${SSH_OPTS[@]}")
-  SCP_CMD=(scp -i "$SSH_KEY" "${SSH_OPTS[@]}")
 else
   SSH_CMD=(ssh "${SSH_OPTS[@]}")
-  SCP_CMD=(scp "${SSH_OPTS[@]}")
 fi
 
 if [[ -n "${SSHPASS:-}" ]]; then
   SSH_CMD=(sshpass -e "${SSH_CMD[@]}")
-  SCP_CMD=(sshpass -e "${SCP_CMD[@]}")
 fi
 
 TMP_ARCHIVE="$(mktemp -t avito-deploy.XXXXXX.tar.gz)"
 trap 'rm -f "$TMP_ARCHIVE"' EXIT
 
-git archive --format=tar.gz -o "$TMP_ARCHIVE" HEAD
+git ls-files -z | tar \
+  --null \
+  --exclude='chrome-profile/*' \
+  --exclude='sent-ids.txt' \
+  --exclude='.DS_Store' \
+  -czf "$TMP_ARCHIVE" \
+  --files-from -
 
 "${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '$REMOTE_DIR'"
-"${SCP_CMD[@]}" "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_HOST}:/tmp/avito-deploy.tar.gz"
+"${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "cat > /tmp/avito-deploy.tar.gz" < "$TMP_ARCHIVE"
 
 "${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "
 set -euo pipefail
