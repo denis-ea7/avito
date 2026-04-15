@@ -23,8 +23,10 @@ const defaultConfig = {
   rooms: [1],
   priceMin: 14000,
   priceMax: 40000,
-  areaMin: '',
-  areaMax: '',
+  totalAreaMin: '',
+  totalAreaMax: '',
+  roomAreaMin: '',
+  roomAreaMax: '',
   metroMinutesMin: '',
   metroMinutesMax: 30,
   metroMode: 'any',
@@ -34,6 +36,13 @@ const defaultConfig = {
   floorMax: '',
   floorsTotalMin: '',
   floorsTotalMax: '',
+  sellerType: 'any',
+  deposit: 'any',
+  aiEnabled: false,
+  aiProvider: 'deepseek',
+  aiModel: 'deepseek-chat',
+  deepseekApiKey: '',
+  deepseekApiKeySet: false,
   autostart: true
 };
 
@@ -216,8 +225,29 @@ function App() {
           <div className="grid four">
             <NumberInput label="Цена от" value={config.priceMin} onChange={(value) => updateConfig('priceMin', value)} />
             <NumberInput label="Цена до" value={config.priceMax} onChange={(value) => updateConfig('priceMax', value)} />
-            <NumberInput label="Площадь от" value={config.areaMin} onChange={(value) => updateConfig('areaMin', value)} />
-            <NumberInput label="Площадь до" value={config.areaMax} onChange={(value) => updateConfig('areaMax', value)} />
+            <NumberInput label="Общая площадь от" value={config.totalAreaMin} onChange={(value) => updateConfig('totalAreaMin', value)} />
+            <NumberInput label="Общая площадь до" value={config.totalAreaMax} onChange={(value) => updateConfig('totalAreaMax', value)} />
+          </div>
+
+          <div className="grid four">
+            <NumberInput label="Площадь комнаты от" value={config.roomAreaMin} onChange={(value) => updateConfig('roomAreaMin', value)} />
+            <NumberInput label="Площадь комнаты до" value={config.roomAreaMax} onChange={(value) => updateConfig('roomAreaMax', value)} />
+            <label className="field">
+              <span>Кто сдает</span>
+              <select value={config.sellerType || 'any'} onChange={(event) => updateConfig('sellerType', event.target.value)}>
+                <option value="any">Не важно</option>
+                <option value="owner">Собственник</option>
+                <option value="agent">Посредник</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Залог</span>
+              <select value={config.deposit || 'any'} onChange={(event) => updateConfig('deposit', event.target.value)}>
+                <option value="any">Не важно</option>
+                <option value="yes">Есть залог</option>
+                <option value="no">Без залога</option>
+              </select>
+            </label>
           </div>
 
           <div className="grid three">
@@ -244,6 +274,33 @@ function App() {
             <NumberInput label="Этажность от" value={config.floorsTotalMin} onChange={(value) => updateConfig('floorsTotalMin', value)} />
             <NumberInput label="Этажность до" value={config.floorsTotalMax} onChange={(value) => updateConfig('floorsTotalMax', value)} />
           </div>
+
+          <fieldset className="fieldSet">
+            <legend>ИИ-фильтр DeepSeek</legend>
+            <label className="check inlineCheck">
+              <input
+                type="checkbox"
+                checked={Boolean(config.aiEnabled)}
+                onChange={(event) => updateConfig('aiEnabled', event.target.checked)}
+              />
+              <span>Использовать ИИ для финальной проверки объявлений</span>
+            </label>
+            <div className="grid two aiGrid">
+              <label className="field">
+                <span>Модель</span>
+                <input value={config.aiModel || ''} placeholder="deepseek-chat" onChange={(event) => updateConfig('aiModel', event.target.value)} />
+              </label>
+              <label className="field">
+                <span>API ключ DeepSeek</span>
+                <input
+                  type="password"
+                  value={config.deepseekApiKey || ''}
+                  placeholder={config.deepseekApiKeySet ? 'Ключ сохранен, новый можно вставить сюда' : 'sk-...'}
+                  onChange={(event) => updateConfig('deepseekApiKey', event.target.value)}
+                />
+              </label>
+            </div>
+          </fieldset>
         </form>
 
         <aside className="side">

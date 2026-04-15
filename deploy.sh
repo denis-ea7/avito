@@ -39,7 +39,13 @@ COPYFILE_DISABLE=1 git ls-files -z | COPYFILE_DISABLE=1 tar \
 "${SSH_CMD[@]}" "${SERVER_USER}@${SERVER_HOST}" "
 set -euo pipefail
 cd '$REMOTE_DIR'
+if [[ -f filters.json ]]; then
+  cp filters.json /tmp/avito-filters.json
+fi
 tar -xzf /tmp/avito-deploy.tar.gz -C '$REMOTE_DIR'
+if [[ -f /tmp/avito-filters.json ]]; then
+  mv /tmp/avito-filters.json filters.json
+fi
 rm -f /tmp/avito-deploy.tar.gz
 PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
 npm run build

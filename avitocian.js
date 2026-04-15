@@ -297,25 +297,129 @@ function formatMessage(label, ad) {
   ].filter(Boolean).join('\n');
 }
 
-async function emitFirstMatching(label, source, ads, filters, sentIds, bot) {
+function aiConfigForPrompt(filters) {
+  const copy = { ...filters };
+  delete copy.deepseekApiKey;
+  delete copy.deepseekApiKeySet;
+  return copy;
+}
+
+async function matchesAiFilter(ad, filters) {
+  if (!filters.aiEnabled) return true;
+  if (!filters.deepseekApiKey) {
+    console.log('ИИ-фильтр включен, но ключ DeepSeek не задан');
+    return true;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${filters.deepseekApiKey}`
+      },
+      body: JSON.stringify({
+        model: filters.aiModel || 'deepseek-chat',
+        temperature: 0,
+        messages: [
+          {
+            role: 'system',
+            content: 'Ты фильтруешь объявления аренды недвижимости. Ответь только JSON вида {"match":true,"reason":"..."}. Учитывай количество комнат, общую площадь, площадь комнаты, залог, посредника, этаж, этажность, год, метро, цену. Если данных не хватает для включенного строгого фильтра, match=false.'
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              filters: aiConfigForPrompt(filters),
+              ad
+            })
+          }
+        ]
+      }),
+      signal: controller.signal
+    });
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content || '';
+    const jsonText = content.match(/\{[\s\S]*\}/)?.[0] || content;
+    const result = JSON.parse(jsonText);
+    console.log(`ИИ-фильтр: ${result.match ? 'подходит' : 'отклонено'}${result.reason ? ` — ${result.reason}` : ''}`);
+    return Boolean(result.match);
+  } catch (e) {
+    console.error('Ошибка ИИ-фильтра:', e.message);
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function emitFirstMatching(label, source, ads, filters, sentIds, bot, propertyType) {
   for (const ad of ads) {
     if (!ad?.href) continue;
     const id = extractListingId(source, ad.href);
     if (!id || sentIds.has(id)) continue;
-    if (!matchesFilters(ad, filters)) continue;
+    const normalizedAd = { ...ad, propertyType };
+    if (!matchesFilters(normalizedAd, filters)) {
+      console.log(`Фильтр отклонил: ${label} ${id}`);
+      continue;
+    }
+    if (!(await matchesAiFilter(normalizedAd, filters))) continue;
     sentIds.add(id);
     saveSentId(id);
-    await sendToTelegram(bot, TELEGRAM_CHAT_ID, formatMessage(label, ad));
+    await sendToTelegram(bot, TELEGRAM_CHAT_ID, formatMessage(label, normalizedAd));
     console.log(`Отправлено: ${label} ${id}`);
     return true;
   }
   return false;
 }
 
-async function parseAvito(page, target, filters, sentIds, bot) {
+async function enrichPuppeteerAds(browser, ads, limit = 6) {
+  const result = [];
+  for (const ad of ads.slice(0, limit)) {
+    if (!ad.href) {
+      result.push(ad);
+      continue;
+    }
+    const page = await browser.newPage();
+    try {
+      await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForTimeout(1200);
+      const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
+      result.push({ ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') });
+    } catch (_) {
+      result.push(ad);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+  return result.concat(ads.slice(limit));
+}
+
+async function enrichPlaywrightAds(context, ads, limit = 6) {
+  const result = [];
+  for (const ad of ads.slice(0, limit)) {
+    if (!ad.href) {
+      result.push(ad);
+      continue;
+    }
+    const page = await context.newPage();
+    try {
+      await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForTimeout(1200);
+      const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
+      result.push({ ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') });
+    } catch (_) {
+      result.push(ad);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+  return result.concat(ads.slice(limit));
+}
+
+async function parseAvito(browser, page, target, filters, sentIds, bot) {
   const ok = await safeGoto(page, target.url, '[data-marker="item"], a[itemprop="url"]');
   if (!ok) return false;
-  const ads = await page.evaluate(() => {
+  let ads = await page.evaluate(() => {
     const cards = Array.from(document.querySelectorAll('[data-marker="item"]')).slice(0, 15);
     const source = cards.length ? cards : Array.from(document.querySelectorAll('a[itemprop="url"]')).slice(0, 15);
     return source.map((node) => {
@@ -327,13 +431,14 @@ async function parseAvito(page, target, filters, sentIds, bot) {
       return { href, title, price, location: text, desc: text };
     });
   }).catch(() => []);
-  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot);
+  ads = await enrichPuppeteerAds(browser, ads);
+  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType);
 }
 
-async function parseCian(page, target, filters, sentIds, bot) {
+async function parseCian(browser, page, target, filters, sentIds, bot) {
   const ok = await safeGoto(page, target.url, 'article[data-name="CardComponent"]');
   if (!ok) return false;
-  const ads = await page.$$eval('article[data-name="CardComponent"]', (nodes) => nodes.slice(0, 15).map((card) => {
+  let ads = await page.$$eval('article[data-name="CardComponent"]', (nodes) => nodes.slice(0, 15).map((card) => {
     const href = card.querySelector('a[href*="/rent/flat/"]')?.href?.split('?')[0] || '';
     const title = card.querySelector('[data-mark="OfferTitle"]')?.textContent?.trim() || '';
     const price = card.querySelector('[data-mark="MainPrice"]')?.textContent?.trim() || '';
@@ -341,13 +446,14 @@ async function parseCian(page, target, filters, sentIds, bot) {
     const desc = card.querySelector('[data-name="Description"]')?.textContent?.trim() || card.innerText || '';
     return { href, title, price, location, desc };
   })).catch(() => []);
-  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot);
+  ads = await enrichPuppeteerAds(browser, ads);
+  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot, target.propertyType);
 }
 
-async function parseYandex(page, target, filters, sentIds, bot) {
+async function parseYandex(context, page, target, filters, sentIds, bot) {
   await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
   await page.waitForTimeout(2500);
-  const ads = await page.evaluate(() => {
+  let ads = await page.evaluate(() => {
     const selectors = [
       'li.OffersSerpItem',
       'li[class*="OffersSerpItem"]',
@@ -368,15 +474,16 @@ async function parseYandex(page, target, filters, sentIds, bot) {
       };
     });
   }).catch(() => []);
-  return emitFirstMatching(target.label, 'yandex', ads, filters, sentIds, bot);
+  ads = await enrichPlaywrightAds(context, ads);
+  return emitFirstMatching(target.label, 'yandex', ads, filters, sentIds, bot, target.propertyType);
 }
 
-async function parseDomclick(page, target, filters, sentIds, bot) {
+async function parseDomclick(context, page, target, filters, sentIds, bot) {
   await page.goto('https://domclick.ru/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
   await page.waitForTimeout(1000);
   await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 45000, referer: 'https://domclick.ru/' });
   await page.waitForTimeout(2500);
-  const ads = await page.evaluate(() => {
+  let ads = await page.evaluate(() => {
     const anchors = Array.from(document.querySelectorAll('a[href*="/card/"]')).slice(0, 15);
     return anchors.map((anchor) => {
       const card = anchor.closest('article, li, div') || anchor;
@@ -391,7 +498,8 @@ async function parseDomclick(page, target, filters, sentIds, bot) {
       };
     });
   }).catch(() => []);
-  return emitFirstMatching(target.label, 'domclick', ads, filters, sentIds, bot);
+  ads = await enrichPlaywrightAds(context, ads);
+  return emitFirstMatching(target.label, 'domclick', ads, filters, sentIds, bot, target.propertyType);
 }
 
 async function processTarget(target, filters, sentIds, bot) {
@@ -399,16 +507,16 @@ async function processTarget(target, filters, sentIds, bot) {
   if (target.type === 'avito' || target.type === 'cian') {
     const { browser, page, profileDir } = await launchPuppeteer(target.type);
     try {
-      if (target.type === 'avito') return await parseAvito(page, target, filters, sentIds, bot);
-      return await parseCian(page, target, filters, sentIds, bot);
+      if (target.type === 'avito') return await parseAvito(browser, page, target, filters, sentIds, bot);
+      return await parseCian(browser, page, target, filters, sentIds, bot);
     } finally {
       await closePuppeteer(browser, profileDir);
     }
   }
   const { browser, context, page } = await launchPlaywright(target.type);
   try {
-    if (target.type === 'yandex') return await parseYandex(page, target, filters, sentIds, bot);
-    return await parseDomclick(page, target, filters, sentIds, bot);
+    if (target.type === 'yandex') return await parseYandex(context, page, target, filters, sentIds, bot);
+    return await parseDomclick(context, page, target, filters, sentIds, bot);
   } finally {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});

@@ -10,6 +10,7 @@ const PORT = Number(process.env.PORT || 4076);
 const HOST = process.env.HOST || '0.0.0.0';
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, 'filters.json');
 const DIST_DIR = path.join(__dirname, 'dist');
+const LOG_TTL_MS = 24 * 60 * 60 * 1000;
 const logs = [];
 
 let botProcess = null;
@@ -22,18 +23,38 @@ app.use(express.json({ limit: '1mb' }));
 function pushLog(line) {
   const text = String(line || '').trim();
   if (!text) return;
-  logs.push({ time: new Date().toISOString(), text });
-  while (logs.length > 300) logs.shift();
+  const now = Date.now();
+  logs.push({ time: new Date(now).toISOString(), text });
+  while (logs.length && Date.parse(logs[0].time) < now - LOG_TTL_MS) logs.shift();
+  while (logs.length > 2000) logs.shift();
+}
+
+function publicConfig(config) {
+  const result = { ...config };
+  result.deepseekApiKeySet = Boolean(result.deepseekApiKey);
+  result.deepseekApiKey = '';
+  return result;
+}
+
+function saveConfigFromRequest(body) {
+  const existing = readConfig(CONFIG_FILE);
+  const next = { ...(body || {}) };
+  if (!next.deepseekApiKey && existing.deepseekApiKey) {
+    next.deepseekApiKey = existing.deepseekApiKey;
+  }
+  delete next.deepseekApiKeySet;
+  return writeConfig(CONFIG_FILE, next);
 }
 
 function botStatus() {
+  const config = readConfig(CONFIG_FILE);
   return {
     running: Boolean(botProcess && !botProcess.killed && botProcess.exitCode === null),
     pid: botProcess?.pid || null,
     startedAt,
-    logs: logs.slice(-120),
-    config: readConfig(CONFIG_FILE),
-    targets: buildSearchTargets(readConfig(CONFIG_FILE))
+    logs: logs.filter((log) => Date.parse(log.time) >= Date.now() - LOG_TTL_MS).slice(-300),
+    config: publicConfig(config),
+    targets: buildSearchTargets(config)
   };
 }
 
@@ -103,12 +124,12 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/config', (req, res) => {
   const config = readConfig(CONFIG_FILE);
-  res.json({ config, targets: buildSearchTargets(config) });
+  res.json({ config: publicConfig(config), targets: buildSearchTargets(config) });
 });
 
 app.put('/api/config', async (req, res) => {
   const wasRunning = botStatus().running;
-  const config = writeConfig(CONFIG_FILE, req.body || {});
+  const config = saveConfigFromRequest(req.body);
   pushLog('Фильтры сохранены');
   if (wasRunning) {
     await queueTransition(async () => {
@@ -116,7 +137,7 @@ app.put('/api/config', async (req, res) => {
       return startBot();
     });
   }
-  res.json({ config, restarted: wasRunning, targets: buildSearchTargets(config) });
+  res.json({ config: publicConfig(config), restarted: wasRunning, targets: buildSearchTargets(config) });
 });
 
 app.post('/api/bot/start', async (req, res) => {
