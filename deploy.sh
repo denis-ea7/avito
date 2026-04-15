@@ -43,6 +43,9 @@ tar -xzf /tmp/avito-deploy.tar.gz -C '$REMOTE_DIR'
 rm -f /tmp/avito-deploy.tar.gz
 PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
 npm run build
+if ! command -v pm2 >/dev/null 2>&1; then
+  npm install -g pm2
+fi
 if screen -ls | grep -q '[.]avito'; then
   screen -S avito -X quit || true
 fi
