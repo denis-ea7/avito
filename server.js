@@ -21,10 +21,11 @@ let transition = Promise.resolve();
 app.use(express.json({ limit: '1mb' }));
 
 function pushLog(line) {
-  const text = String(line || '').trim();
-  if (!text) return;
   const now = Date.now();
-  logs.push({ time: new Date(now).toISOString(), text });
+  const lines = String(line || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  for (const text of lines) {
+    logs.push({ time: new Date(now).toISOString(), text });
+  }
   while (logs.length && Date.parse(logs[0].time) < now - LOG_TTL_MS) logs.shift();
   while (logs.length > 2000) logs.shift();
 }

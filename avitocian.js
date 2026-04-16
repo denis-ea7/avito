@@ -367,7 +367,7 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
       decision = filterDecision(normalizedAd, filters);
     }
     if (!decision.match) {
-      console.log(`Фильтр отклонил: ${label} ${id}`);
+      console.log(`Фильтр отклонил: ${label} ${id}${decision.reason ? ` — ${decision.reason}` : ''}`);
       continue;
     }
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
@@ -377,6 +377,7 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
     console.log(`Отправлено: ${label} ${id}`);
     return true;
   }
+  console.log(`Новых подходящих нет: ${label}`);
   return false;
 }
 
