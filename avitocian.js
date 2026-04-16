@@ -35,6 +35,7 @@ const WORK_HOURS = {
   from: Number(process.env.WORK_HOUR_FROM || 8),
   to: Number(process.env.WORK_HOUR_TO || 23)
 };
+const AVITO_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
 puppeteer.use(stealthPlugin());
 
@@ -157,6 +158,17 @@ async function setPageFingerprint(page) {
   });
 }
 
+async function setAvitoMobileFingerprint(page) {
+  await page.setUserAgent(AVITO_MOBILE_UA);
+  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 3 });
+  await page.setExtraHTTPHeaders({
+    'accept-language': 'ru-RU,ru;q=0.9'
+  });
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
+}
+
 async function dismissOverlays(page) {
   await page.evaluate(() => {
     const variants = ['хорошо', 'принять', 'accept', 'ok', 'закрыть'];
@@ -236,8 +248,12 @@ async function launchPuppeteer(siteType) {
   const page = await browser.newPage();
   page.setDefaultTimeout(60000);
   page.setDefaultNavigationTimeout(60000);
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-  await setPageFingerprint(page);
+  if (siteType === 'avito') {
+    await setAvitoMobileFingerprint(page);
+  } else {
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await setPageFingerprint(page);
+  }
   return { browser, page, profileDir };
 }
 
@@ -381,10 +397,11 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
   return false;
 }
 
-async function enrichPuppeteerAd(browser, ad) {
+async function enrichPuppeteerAd(browser, ad, siteType) {
   if (!ad.href) return ad;
   const page = await browser.newPage();
   try {
+    if (siteType === 'avito') await setAvitoMobileFingerprint(page);
     await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);
     const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
@@ -412,21 +429,29 @@ async function enrichPlaywrightAd(context, ad) {
 }
 
 async function parseAvito(browser, page, target, filters, sentIds, bot) {
-  const ok = await safeGoto(page, target.url, '[data-marker="item"], a[itemprop="url"]');
+  const ok = await safeGoto(page, target.url, 'a[href*="/kvartiry/"], a[href*="/komnaty/"]');
   if (!ok) return false;
   let ads = await page.evaluate(() => {
-    const cards = Array.from(document.querySelectorAll('[data-marker="item"]')).slice(0, 15);
-    const source = cards.length ? cards : Array.from(document.querySelectorAll('a[itemprop="url"]')).slice(0, 15);
-    return source.map((node) => {
-      const anchor = node.matches?.('a') ? node : node.querySelector('a[itemprop="url"], a[href*="/kvartiry/"], a[href*="/komnaty/"]');
-      const text = node.innerText || anchor?.innerText || '';
-      const href = anchor?.href?.replace('m.avito.ru', 'www.avito.ru') || '';
-      const title = node.querySelector?.('[itemprop="name"], h3')?.textContent?.trim() || text.split('\n')[0] || '';
-      const price = node.querySelector?.('[itemprop="price"], [data-marker="item-price"]')?.textContent?.trim() || '';
-      return { href, title, price, location: text, desc: text };
-    });
+    const seen = new Set();
+    return Array.from(document.querySelectorAll('a[href*="/kvartiry/"], a[href*="/komnaty/"]'))
+      .map((anchor) => anchor.href || '')
+      .filter((href) => /_\d+(?:\?|$)/.test(href))
+      .map((href) => href.split('#')[0])
+      .filter((href) => {
+        const key = href.split('?')[0];
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 15)
+      .map((href) => {
+        const pathname = new URL(href).pathname;
+        const rawTitle = decodeURIComponent(pathname.split('/').pop() || '').replace(/_\d+$/, '').replace(/[_-]+/g, ' ').trim();
+        return { href, title: rawTitle, price: '', location: '', desc: rawTitle };
+      });
   }).catch(() => []);
-  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad));
+  console.log(`Авито найдено карточек: ${ads.length}`);
+  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'avito'));
 }
 
 async function parseCian(browser, page, target, filters, sentIds, bot) {
@@ -440,7 +465,7 @@ async function parseCian(browser, page, target, filters, sentIds, bot) {
     const desc = card.querySelector('[data-name="Description"]')?.textContent?.trim() || card.innerText || '';
     return { href, title, price, location, desc };
   })).catch(() => []);
-  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad));
+  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'cian'));
 }
 
 async function parseYandex(context, page, target, filters, sentIds, bot) {
