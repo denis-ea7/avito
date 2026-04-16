@@ -369,7 +369,7 @@ async function matchesAiFilter(ad, filters) {
   }
 }
 
-async function emitFirstMatching(label, source, ads, filters, sentIds, bot, propertyType, enrichAd) {
+async function emitFirstMatching(label, source, ads, filters, sentIds, bot, propertyType, enrichAd, maxEnriched = 6) {
   let enrichedCount = 0;
   for (const ad of ads) {
     if (!ad?.href) continue;
@@ -377,7 +377,7 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
     if (!id || sentIds.has(id)) continue;
     let normalizedAd = { ...ad, propertyType };
     let decision = filterDecision(normalizedAd, filters);
-    if (((!decision.match && decision.detailsUseful) || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < 6) {
+    if (((!decision.match && decision.detailsUseful) || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < maxEnriched) {
       enrichedCount += 1;
       normalizedAd = { ...(await enrichAd(ad)), propertyType };
       decision = filterDecision(normalizedAd, filters);
@@ -451,7 +451,7 @@ async function parseAvito(browser, page, target, filters, sentIds, bot) {
       });
   }).catch(() => []);
   console.log(`Авито найдено карточек: ${ads.length}`);
-  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'avito'));
+  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'avito'), 15);
 }
 
 async function parseCian(browser, page, target, filters, sentIds, bot) {
