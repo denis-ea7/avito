@@ -330,6 +330,12 @@ h2 {
   font-weight: 800;
 }
 
+.logLine a {
+  color: #0f8b6d;
+  font-weight: 800;
+  text-decoration: underline;
+}
+
 @media (max-width: 1040px) {
   .layout {
     grid-template-columns: 1fr;

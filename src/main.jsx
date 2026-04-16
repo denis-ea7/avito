@@ -94,6 +94,23 @@ function NumberInput({ label, value, onChange, placeholder }) {
   );
 }
 
+function LogText({ log }) {
+  if (!log.url) return log.text;
+  const match = log.text.match(/(Комната|Квартира)/);
+  if (!match) {
+    return <a href={log.url} target="_blank" rel="noreferrer">{log.text}</a>;
+  }
+  const start = match.index;
+  const end = start + match[0].length;
+  return (
+    <>
+      {log.text.slice(0, start)}
+      <a href={log.url} target="_blank" rel="noreferrer">{match[0]}</a>
+      {log.text.slice(end)}
+    </>
+  );
+}
+
 function App() {
   const [config, setConfig] = useState(defaultConfig);
   const [status, setStatus] = useState(null);
@@ -295,7 +312,7 @@ function App() {
             <h2>Поиск</h2>
             <div className="targetList">
               {targets.map((target) => (
-                <a key={`${target.type}-${target.propertyType}`} href={target.url} target="_blank" rel="noreferrer">
+                <a key={`${target.type}-${target.region || 'region'}-${target.propertyType}`} href={target.url} target="_blank" rel="noreferrer">
                   <span>{target.label}</span>
                   <small>{target.url}</small>
                 </a>
@@ -310,7 +327,7 @@ function App() {
               {logs.slice().reverse().map((log, index) => (
                 <div className="logLine" key={`${log.time}-${index}`}>
                   <time>{new Date(log.time).toLocaleTimeString('ru-RU')}</time>
-                  <span>{log.text}</span>
+                  <span><LogText log={log} /></span>
                 </div>
               ))}
             </div>

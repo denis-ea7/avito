@@ -314,6 +314,10 @@ function formatMessage(label, ad) {
   ].filter(Boolean).join('\n');
 }
 
+function logUrl(url) {
+  return url ? ` [url:${url}]` : '';
+}
+
 function aiConfigForPrompt(filters) {
   const copy = { ...filters };
   delete copy.deepseekApiKey;
@@ -383,14 +387,14 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
       decision = filterDecision(normalizedAd, filters);
     }
     if (!decision.match) {
-      console.log(`Фильтр отклонил: ${label} ${id}${decision.reason ? ` — ${decision.reason}` : ''}`);
+      console.log(`Фильтр отклонил: ${label} ${id}${logUrl(normalizedAd.href)}${decision.reason ? ` — ${decision.reason}` : ''}`);
       continue;
     }
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
     sentIds.add(id);
     saveSentId(id);
     await sendToTelegram(bot, TELEGRAM_CHAT_ID, formatMessage(label, normalizedAd));
-    console.log(`Отправлено: ${label} ${id}`);
+    console.log(`Отправлено: ${label} ${id}${logUrl(normalizedAd.href)}`);
     return true;
   }
   console.log(`Новых подходящих нет: ${label}`);

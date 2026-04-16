@@ -24,7 +24,12 @@ function pushLog(line) {
   const now = Date.now();
   const lines = String(line || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
   for (const text of lines) {
-    logs.push({ time: new Date(now).toISOString(), text });
+    const urlMatch = text.match(/\s*\[url:(https?:\/\/[^\]]+)\]/);
+    logs.push({
+      time: new Date(now).toISOString(),
+      text: text.replace(/\s*\[url:https?:\/\/[^\]]+\]/, ''),
+      url: urlMatch?.[1] || ''
+    });
   }
   while (logs.length && Date.parse(logs[0].time) < now - LOG_TTL_MS) logs.shift();
   while (logs.length > 2000) logs.shift();
