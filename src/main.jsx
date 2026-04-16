@@ -16,8 +16,6 @@ const propertyOptions = [
 
 const defaultConfig = {
   enabled: true,
-  city: 'Москва',
-  query: '',
   sources: ['avito', 'cian', 'yandex', 'domclick'],
   propertyTypes: ['room', 'flat'],
   rooms: [1],
@@ -202,17 +200,6 @@ function App() {
           <div className="sectionTitle">
             <h2>Фильтры</h2>
             <p>Ссылки на найденные объекты отправляются в Telegram.</p>
-          </div>
-
-          <div className="grid two">
-            <label className="field">
-              <span>Город</span>
-              <input value={config.city || ''} onChange={(event) => updateConfig('city', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Что ищем</span>
-              <input value={config.query || ''} placeholder="метро, район, ключевые слова" onChange={(event) => updateConfig('query', event.target.value)} />
-            </label>
           </div>
 
           <div className="grid two">

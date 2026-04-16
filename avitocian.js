@@ -418,7 +418,7 @@ async function parseAvito(browser, page, target, filters, sentIds, bot) {
     const cards = Array.from(document.querySelectorAll('[data-marker="item"]')).slice(0, 15);
     const source = cards.length ? cards : Array.from(document.querySelectorAll('a[itemprop="url"]')).slice(0, 15);
     return source.map((node) => {
-      const anchor = node.matches?.('a') ? node : node.querySelector('a[itemprop="url"], a[href*="/moskva/"]');
+      const anchor = node.matches?.('a') ? node : node.querySelector('a[itemprop="url"], a[href*="/kvartiry/"], a[href*="/komnaty/"]');
       const text = node.innerText || anchor?.innerText || '';
       const href = anchor?.href?.replace('m.avito.ru', 'www.avito.ru') || '';
       const title = node.querySelector?.('[itemprop="name"], h3')?.textContent?.trim() || text.split('\n')[0] || '';

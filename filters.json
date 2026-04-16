@@ -1,7 +1,5 @@
 {
   "enabled": true,
-  "city": "Москва",
-  "query": "",
   "sources": [
     "avito",
     "cian",
