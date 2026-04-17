@@ -17,6 +17,7 @@ try {
 }
 
 const SENT_FILE = path.join(__dirname, 'sent-ids.txt');
+const LATEST_FILE = path.join(__dirname, 'latest-ids.json');
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, 'filters.json');
 const SKIP_TELEGRAM = process.env.SKIP_TELEGRAM === '1';
 const TELEGRAM_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
@@ -56,6 +57,21 @@ function loadSentIds() {
 
 function saveSentId(id) {
   fs.appendFileSync(SENT_FILE, `${id}\n`);
+}
+
+function loadLatestIds() {
+  try {
+    if (!fs.existsSync(LATEST_FILE)) return {};
+    const data = JSON.parse(fs.readFileSync(LATEST_FILE, 'utf8'));
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveLatestId(latestIds, key, id) {
+  latestIds[key] = id;
+  fs.writeFileSync(LATEST_FILE, `${JSON.stringify(latestIds, null, 2)}\n`);
 }
 
 function rand(min, max) {
@@ -373,12 +389,24 @@ async function matchesAiFilter(ad, filters) {
   }
 }
 
-async function emitFirstMatching(label, source, ads, filters, sentIds, bot, propertyType, enrichAd, maxEnriched = 6) {
+async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, enrichAd, maxEnriched = 6) {
+  const label = target.label;
+  const source = target.type;
+  const propertyType = target.propertyType;
+  const latestKey = `${target.type}:${target.region}:${target.propertyType}`;
+  const previousLatestId = latestIds[latestKey] || '';
   let enrichedCount = 0;
   for (const ad of ads) {
     if (!ad?.href) continue;
     const id = extractListingId(source, ad.href);
-    if (!id || sentIds.has(id)) continue;
+    if (!id) continue;
+    if (previousLatestId && id === previousLatestId) break;
+    if (!previousLatestId && sentIds.has(id)) {
+      saveLatestId(latestIds, latestKey, id);
+      console.log(`Последний новый уже был отправлен: ${label} ${id}${logUrl(ad.href)}`);
+      return false;
+    }
+    if (sentIds.has(id)) continue;
     let normalizedAd = { ...ad, propertyType };
     let decision = filterDecision(normalizedAd, filters);
     if (((!decision.match && decision.detailsUseful) || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < maxEnriched) {
@@ -393,6 +421,7 @@ async function emitFirstMatching(label, source, ads, filters, sentIds, bot, prop
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
     sentIds.add(id);
     saveSentId(id);
+    saveLatestId(latestIds, latestKey, id);
     await sendToTelegram(bot, TELEGRAM_CHAT_ID, formatMessage(label, normalizedAd));
     console.log(`Отправлено: ${label} ${id}${logUrl(normalizedAd.href)}`);
     return true;
@@ -433,7 +462,7 @@ async function enrichPlaywrightAd(context, ad) {
   }
 }
 
-async function parseAvito(browser, page, target, filters, sentIds, bot) {
+async function parseAvito(browser, page, target, filters, sentIds, latestIds, bot) {
   const ok = await safeGoto(page, target.url, 'a[href*="/kvartiry/"], a[href*="/komnaty/"]');
   if (!ok) return false;
   let ads = await page.evaluate(() => {
@@ -489,10 +518,10 @@ async function parseAvito(browser, page, target, filters, sentIds, bot) {
     return ads.slice(0, 15);
   }).catch(() => []);
   console.log(`Авито найдено карточек: ${ads.length}`);
-  return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'avito'), 15);
+  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPuppeteerAd(browser, ad, 'avito'), 15);
 }
 
-async function parseCian(browser, page, target, filters, sentIds, bot) {
+async function parseCian(browser, page, target, filters, sentIds, latestIds, bot) {
   const ok = await safeGoto(page, target.url, 'article[data-name="CardComponent"]');
   if (!ok) return false;
   let ads = await page.$$eval('article[data-name="CardComponent"]', (nodes) => nodes.slice(0, 15).map((card) => {
@@ -503,10 +532,10 @@ async function parseCian(browser, page, target, filters, sentIds, bot) {
     const desc = card.querySelector('[data-name="Description"]')?.textContent?.trim() || card.innerText || '';
     return { href, title, price, location, desc };
   })).catch(() => []);
-  return emitFirstMatching(target.label, 'cian', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'cian'));
+  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPuppeteerAd(browser, ad, 'cian'));
 }
 
-async function parseYandex(context, page, target, filters, sentIds, bot) {
+async function parseYandex(context, page, target, filters, sentIds, latestIds, bot) {
   await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
   await page.waitForTimeout(2500);
   let ads = await page.evaluate(() => {
@@ -530,10 +559,10 @@ async function parseYandex(context, page, target, filters, sentIds, bot) {
       };
     });
   }).catch(() => []);
-  return emitFirstMatching(target.label, 'yandex', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPlaywrightAd(context, ad));
+  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad));
 }
 
-async function parseDomclick(context, page, target, filters, sentIds, bot) {
+async function parseDomclick(context, page, target, filters, sentIds, latestIds, bot) {
   await page.goto('https://domclick.ru/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
   await page.waitForTimeout(1000);
   await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 45000, referer: 'https://domclick.ru/' });
@@ -553,31 +582,31 @@ async function parseDomclick(context, page, target, filters, sentIds, bot) {
       };
     });
   }).catch(() => []);
-  return emitFirstMatching(target.label, 'domclick', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPlaywrightAd(context, ad));
+  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad));
 }
 
-async function processTarget(target, filters, sentIds, bot) {
+async function processTarget(target, filters, sentIds, latestIds, bot) {
   console.log(`Обработка: ${target.label}`);
   if (target.type === 'avito' || target.type === 'cian') {
     const { browser, page, profileDir } = await launchPuppeteer(target.type);
     try {
-      if (target.type === 'avito') return await parseAvito(browser, page, target, filters, sentIds, bot);
-      return await parseCian(browser, page, target, filters, sentIds, bot);
+      if (target.type === 'avito') return await parseAvito(browser, page, target, filters, sentIds, latestIds, bot);
+      return await parseCian(browser, page, target, filters, sentIds, latestIds, bot);
     } finally {
       await closePuppeteer(browser, profileDir);
     }
   }
   const { browser, context, page } = await launchPlaywright(target.type);
   try {
-    if (target.type === 'yandex') return await parseYandex(context, page, target, filters, sentIds, bot);
-    return await parseDomclick(context, page, target, filters, sentIds, bot);
+    if (target.type === 'yandex') return await parseYandex(context, page, target, filters, sentIds, latestIds, bot);
+    return await parseDomclick(context, page, target, filters, sentIds, latestIds, bot);
   } finally {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
   }
 }
 
-async function oneRun(sentIds, bot) {
+async function oneRun(sentIds, latestIds, bot) {
   if (!isWithinAllowedTimeRange()) {
     console.log(`Вне рабочего времени ${WORK_HOURS.from}:00-${WORK_HOURS.to}:00`);
     return;
@@ -589,7 +618,7 @@ async function oneRun(sentIds, bot) {
   for (const target of targets) {
     if (stopping) return;
     try {
-      await processTarget(target, filters, sentIds, bot);
+      await processTarget(target, filters, sentIds, latestIds, bot);
     } catch (e) {
       console.error(`Ошибка ${target.label}:`, e.message);
     }
@@ -606,12 +635,13 @@ async function main() {
     console.log('Telegram включен');
   }
   const sentIds = loadSentIds();
+  const latestIds = loadLatestIds();
   if (process.env.SINGLE_RUN === '1') {
-    await oneRun(sentIds, bot);
+    await oneRun(sentIds, latestIds, bot);
     return;
   }
   while (!stopping) {
-    await oneRun(sentIds, bot);
+    await oneRun(sentIds, latestIds, bot);
     const wait = rand(RUN_INTERVAL_MS_MIN, RUN_INTERVAL_MS_MAX);
     console.log(`Следующий прогон через ${Math.round(wait / 1000)} секунд`);
     await sleep(wait);
