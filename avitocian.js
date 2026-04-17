@@ -486,6 +486,7 @@ async function parseAvito(browser, page, target, filters, sentIds, latestIds, bo
       const number = Number(String(value).replace(/[^\d]/g, ''));
       return Number.isFinite(number) && number > 0 ? `${number.toLocaleString('ru-RU')} ₽` : String(value);
     };
+    const text = (node) => node?.textContent?.replace(/\s+/g, ' ').trim() || '';
     const addAd = (ad) => {
       const href = normalizeHref(ad.href);
       if (!href || !/_\d+$/.test(href)) return;
@@ -505,6 +506,27 @@ async function parseAvito(browser, page, target, filters, sentIds, latestIds, bo
           addAd({ href: offer.url, title: offer.name, price: offer.price, desc: offer.description || '' });
         }
       } catch (_) {}
+    }
+    for (const card of Array.from(document.querySelectorAll('[class*="iva-item-content"], [data-marker^="item-wrapper"]'))) {
+      const anchorSelectors = [
+        'a[data-marker="item-title"][href*="/kvartiry/"], a[data-marker="item-title"][href*="/komnaty/"]',
+        'a[itemprop="url"][href*="/kvartiry/"], a[itemprop="url"][href*="/komnaty/"]',
+        'a[href*="/kvartiry/"], a[href*="/komnaty/"]'
+      ];
+      const anchor = anchorSelectors.map((selector) => card.querySelector(selector)).find(Boolean);
+      const price = card.querySelector('meta[itemprop="price"]')?.getAttribute('content') || text(card.querySelector('[data-marker="item-price-value"], [data-marker="item-price"]'));
+      const title = anchor?.getAttribute('title') || text(anchor) || card.querySelector('img[itemprop="image"]')?.getAttribute('alt') || '';
+      const locationText = text(card.querySelector('[data-marker="item-address"], [data-marker="item-location"]'));
+      const paramsText = text(card.querySelector('[data-marker="item-specific-params"]'));
+      const dateText = text(card.querySelector('[data-marker="item-date"], [data-marker="item-date/wrapper"]'));
+      const bodyText = text(card.querySelector('.iva-item-bottomBlock-VewGa, [class*="iva-item-bottomBlock"]'));
+      addAd({
+        href: anchor?.href || anchor?.getAttribute('href') || '',
+        title,
+        price,
+        location: locationText,
+        desc: [paramsText, locationText, dateText, bodyText].filter(Boolean).join('\n')
+      });
     }
     for (const anchor of Array.from(document.querySelectorAll('a[href*="/kvartiry/"], a[href*="/komnaty/"]'))) {
       const wrapper = anchor.closest('[data-marker^="item-wrapper"], article, li, div');
