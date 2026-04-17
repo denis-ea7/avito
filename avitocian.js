@@ -408,8 +408,9 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     if (siteType === 'avito') await setAvitoMobileFingerprint(page);
     await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);
+    const pageTitle = await page.title().catch(() => '');
     const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
-    return { ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') };
+    return { ...ad, title: ad.title || pageTitle, desc: [ad.desc, pageTitle, detail].filter(Boolean).join('\n') };
   } catch (_) {
     return ad;
   } finally {
@@ -437,22 +438,55 @@ async function parseAvito(browser, page, target, filters, sentIds, bot) {
   if (!ok) return false;
   let ads = await page.evaluate(() => {
     const seen = new Set();
-    return Array.from(document.querySelectorAll('a[href*="/kvartiry/"], a[href*="/komnaty/"]'))
-      .map((anchor) => anchor.href || '')
-      .filter((href) => /_\d+(?:\?|$)/.test(href))
-      .map((href) => href.split('#')[0])
-      .filter((href) => {
-        const key = href.split('?')[0];
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 15)
-      .map((href) => {
-        const pathname = new URL(href).pathname;
-        const rawTitle = decodeURIComponent(pathname.split('/').pop() || '').replace(/_\d+$/, '').replace(/[_-]+/g, ' ').trim();
-        return { href, title: rawTitle, price: '', location: '', desc: rawTitle };
+    const normalizeHref = (href) => {
+      try {
+        return new URL(href, location.origin).href.split('#')[0].split('?')[0];
+      } catch (_) {
+        return '';
+      }
+    };
+    const titleFromHref = (href) => {
+      try {
+        return decodeURIComponent(new URL(href).pathname.split('/').pop() || '').replace(/_\d+$/, '').replace(/[_-]+/g, ' ').trim();
+      } catch (_) {
+        return '';
+      }
+    };
+    const priceText = (value) => {
+      if (value === null || value === undefined || value === '') return '';
+      const number = Number(String(value).replace(/[^\d]/g, ''));
+      return Number.isFinite(number) && number > 0 ? `${number.toLocaleString('ru-RU')} ₽` : String(value);
+    };
+    const addAd = (ad) => {
+      const href = normalizeHref(ad.href);
+      if (!href || !/_\d+$/.test(href)) return;
+      if (seen.has(href)) return;
+      seen.add(href);
+      const title = ad.title || titleFromHref(href);
+      const price = priceText(ad.price);
+      const desc = [title, price, ad.desc].filter(Boolean).join('\n');
+      ads.push({ href, title, price, location: ad.location || '', desc });
+    };
+    const ads = [];
+    for (const script of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
+      try {
+        const data = JSON.parse(script.textContent || '{}');
+        const offers = Array.isArray(data?.offers?.offers) ? data.offers.offers : Array.isArray(data?.offers) ? data.offers : [];
+        for (const offer of offers) {
+          addAd({ href: offer.url, title: offer.name, price: offer.price, desc: offer.description || '' });
+        }
+      } catch (_) {}
+    }
+    for (const anchor of Array.from(document.querySelectorAll('a[href*="/kvartiry/"], a[href*="/komnaty/"]'))) {
+      const wrapper = anchor.closest('[data-marker^="item-wrapper"], article, li, div');
+      addAd({
+        href: anchor.href || anchor.getAttribute('href') || '',
+        title: anchor.getAttribute('title') || anchor.querySelector('[data-marker="item/link-text"]')?.textContent?.trim() || '',
+        price: '',
+        desc: wrapper?.innerText || anchor.innerText || ''
       });
+    }
+    return ads.slice(0, 15);
   }).catch(() => []);
   console.log(`Авито найдено карточек: ${ads.length}`);
   return emitFirstMatching(target.label, 'avito', ads, filters, sentIds, bot, target.propertyType, (ad) => enrichPuppeteerAd(browser, ad, 'avito'), 15);
