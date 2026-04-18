@@ -320,14 +320,7 @@ async function launchPlaywright(siteType) {
 }
 
 function formatMessage(label, ad) {
-  const desc = ad.desc && ad.desc.length > 1400 ? `${ad.desc.slice(0, 1400)}...` : ad.desc;
-  return [
-    `🏠 <b>${ad.title || label}</b>`,
-    ad.price ? `💰 ${ad.price}` : '',
-    ad.location ? `📍 ${ad.location}` : '',
-    desc ? `\n${desc}` : '',
-    `🔗 ${ad.href}`
-  ].filter(Boolean).join('\n');
+  return ad.href;
 }
 
 function logUrl(url) {
