@@ -409,7 +409,7 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
     if (sentIds.has(id)) continue;
     let normalizedAd = { ...ad, propertyType };
     let decision = filterDecision(normalizedAd, filters);
-    if (((!decision.match && decision.detailsUseful) || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < maxEnriched) {
+    if ((decision.detailsUseful || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < maxEnriched) {
       enrichedCount += 1;
       normalizedAd = { ...(await enrichAd(ad)), propertyType };
       decision = filterDecision(normalizedAd, filters);
