@@ -171,7 +171,7 @@ async function sendToTelegram(bot, chatId, message) {
     if (!chatId) throw new Error('TG_CHAT_ID пустой');
     const chatIds = String(chatId).split(',').map((id) => id.trim()).filter(Boolean);
     for (const id of chatIds) {
-      const sent = await bot.sendMessage(id, message, { disable_web_page_preview: false });
+      const sent = await bot.sendMessage(id, message, { parse_mode: 'HTML', disable_web_page_preview: false });
       console.log(`Telegram доставлено: chat ${String(sent.chat.id).slice(-4)}, message ${sent.message_id}`);
     }
   } catch (e) {
@@ -348,6 +348,14 @@ function compactText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function kmBetween(a, b) {
   const radius = 6371;
   const toRad = (value) => value * Math.PI / 180;
@@ -517,12 +525,12 @@ async function formatMessage(label, ad) {
   const geo = await geocodeAd(ad);
   const routeUrl = yandexRouteUrl(geo.point, geo.address);
   const stations = geo.point ? await nearbyStations(geo.point) : [];
-  const lines = [ad.href];
-  if (routeUrl) lines.push(routeUrl);
-  if (geo.point) lines.push(`От Охотного ряда: ${formatKm(kmBetween(OKHOTNY_RYAD, geo.point))}`);
+  const lines = [escapeHtml(ad.href)];
+  if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
+  if (geo.point) lines.push(`От Охотного ряда: ${escapeHtml(formatKm(kmBetween(OKHOTNY_RYAD, geo.point)))}`);
   if (stations.length) {
     lines.push('Станции:');
-    lines.push(...stations.map((station) => `${station.type} ${station.name}: ${formatKm(station.distanceKm)}`));
+    lines.push(...stations.map((station) => `${escapeHtml(station.type)} ${escapeHtml(station.name)}: ${escapeHtml(formatKm(station.distanceKm))}`));
   }
   return lines.filter(Boolean).join('\n');
 }
