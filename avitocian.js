@@ -18,6 +18,7 @@ try {
 
 const SENT_FILE = path.join(__dirname, 'sent-ids.txt');
 const LATEST_FILE = path.join(__dirname, 'latest-ids.json');
+const GEO_CACHE_FILE = path.join(__dirname, 'geo-cache.json');
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, 'filters.json');
 const SKIP_TELEGRAM = process.env.SKIP_TELEGRAM === '1';
 const TELEGRAM_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
@@ -37,6 +38,7 @@ const WORK_HOURS = {
   to: Number(process.env.WORK_HOUR_TO || 23)
 };
 const AVITO_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+const OKHOTNY_RYAD = { lat: 55.755804, lon: 37.614608 };
 
 puppeteer.use(stealthPlugin());
 
@@ -49,6 +51,7 @@ const proxyList = (process.env.PROXY_LIST || '')
 let proxyIndex = 0;
 let runCounter = 0;
 let stopping = false;
+let geoCache = null;
 
 function loadSentIds() {
   if (!fs.existsSync(SENT_FILE)) return new Set();
@@ -72,6 +75,28 @@ function loadLatestIds() {
 function saveLatestId(latestIds, key, id) {
   latestIds[key] = id;
   fs.writeFileSync(LATEST_FILE, `${JSON.stringify(latestIds, null, 2)}\n`);
+}
+
+function loadGeoCache() {
+  try {
+    if (!fs.existsSync(GEO_CACHE_FILE)) return { geocode: {}, stations: {} };
+    const data = JSON.parse(fs.readFileSync(GEO_CACHE_FILE, 'utf8'));
+    return {
+      geocode: data?.geocode && typeof data.geocode === 'object' ? data.geocode : {},
+      stations: data?.stations && typeof data.stations === 'object' ? data.stations : {}
+    };
+  } catch (_) {
+    return { geocode: {}, stations: {} };
+  }
+}
+
+function getGeoCache() {
+  if (!geoCache) geoCache = loadGeoCache();
+  return geoCache;
+}
+
+function saveGeoCache() {
+  if (geoCache) fs.writeFileSync(GEO_CACHE_FILE, `${JSON.stringify(geoCache, null, 2)}\n`);
 }
 
 function rand(min, max) {
@@ -146,7 +171,7 @@ async function sendToTelegram(bot, chatId, message) {
     if (!chatId) throw new Error('TG_CHAT_ID пустой');
     const chatIds = String(chatId).split(',').map((id) => id.trim()).filter(Boolean);
     for (const id of chatIds) {
-      const sent = await bot.sendMessage(id, message, { parse_mode: 'HTML', disable_web_page_preview: false });
+      const sent = await bot.sendMessage(id, message, { disable_web_page_preview: false });
       console.log(`Telegram доставлено: chat ${String(sent.chat.id).slice(-4)}, message ${sent.message_id}`);
     }
   } catch (e) {
@@ -319,8 +344,183 @@ async function launchPlaywright(siteType) {
   return { browser, context, page };
 }
 
-function formatMessage(label, ad) {
-  return ad.href;
+function compactText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function kmBetween(a, b) {
+  const radius = 6371;
+  const toRad = (value) => value * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * radius * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function formatKm(value) {
+  if (!Number.isFinite(value)) return '';
+  return value < 1 ? `${Math.round(value * 1000)} м` : `${value.toFixed(value < 10 ? 1 : 0)} км`;
+}
+
+function addressForGeo(ad) {
+  const parts = [ad.location, ad.desc, ad.title]
+    .flatMap((value) => String(value || '').split(/\n| · |;|\|/).map(compactText))
+    .filter(Boolean);
+  const marker = /(москва|московская|ул\.|улица|проспект|пр-кт|шоссе|переулок|пер\.|проезд|бульвар|бул\.|набережная|наб\.|площадь|пл\.|дом|д\.|корпус|к\.|химки|подольск|балашиха|люберцы|мытищи|красногорск|долгопрудный|видное|реутов|котельники|пушкино|одинцово|домодедово|щелково|лобня|дмитров|зеленоград)/i;
+  const selected = parts.filter((part) => marker.test(part)).slice(0, 4);
+  const value = (selected.length ? selected.join(', ') : parts[0] || '')
+    .replace(/ул\./gi, 'улица')
+    .replace(/пр-кт|просп\./gi, 'проспект')
+    .replace(/пер\./gi, 'переулок')
+    .replace(/бул\./gi, 'бульвар')
+    .replace(/наб\./gi, 'набережная')
+    .replace(/пл\./gi, 'площадь')
+    .replace(/\bд\./gi, 'дом')
+    .replace(/от\s+\d+\s+мин\.?/gi, '')
+    .replace(/(\d)([А-ЯЁ])/g, '$1, $2')
+    .replace(/\s+,/g, ',')
+    .slice(0, 300)
+    .trim();
+  if (!value) return '';
+  return value;
+}
+
+function yandexRouteUrl(point, address) {
+  const from = `${OKHOTNY_RYAD.lat},${OKHOTNY_RYAD.lon}`;
+  const to = point ? `${point.lat},${point.lon}` : address;
+  if (!to) return '';
+  return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(to)}&rtt=mt`;
+}
+
+async function fetchJson(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function geocodeAd(ad) {
+  const address = addressForGeo(ad);
+  if (!address) return { address: '', point: null };
+  const cache = getGeoCache();
+  if (cache.geocode[address]) return { address, point: cache.geocode[address] };
+  try {
+    const queries = Array.from(new Set([
+      address,
+      address.replace(/,/g, ' '),
+      `${address} Москва Россия`,
+      `${address} Московская область Россия`,
+      `${address} Россия`
+    ].map(compactText).filter(Boolean)));
+    for (const query of queries) {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`;
+      const data = await fetchJson(url, { headers: { 'User-Agent': 'avito-cian-bot/1.0' } }, 10000);
+      const item = Array.isArray(data) ? data[0] : null;
+      const point = item ? { lat: Number(item.lat), lon: Number(item.lon), name: item.display_name || '' } : null;
+      if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
+        cache.geocode[address] = point;
+        saveGeoCache();
+        return { address, point };
+      }
+      await sleep(1100);
+    }
+  } catch (e) {
+    console.error('Геокодинг не сработал:', e.message);
+  }
+  return { address, point: null };
+}
+
+function stationType(tags = {}) {
+  const text = [tags.network, tags.operator, tags.line, tags.route, tags.ref, tags.name].filter(Boolean).join(' ');
+  if (/мцд|mcd|d[1-6]|д[1-6]/i.test(text)) return 'МЦД';
+  if (tags.station === 'subway' || tags.subway === 'yes' || /метро|moscow metro|московский метрополитен/i.test(text)) return 'Метро';
+  if (tags.railway === 'station' || tags.railway === 'halt' || tags.train === 'yes' || tags.station === 'train') return 'ЖД';
+  return '';
+}
+
+function stationName(tags = {}) {
+  return compactText(tags.name || tags['name:ru'] || tags.official_name || '');
+}
+
+async function nearbyStations(point) {
+  if (!point) return [];
+  const cache = getGeoCache();
+  const key = `${point.lat.toFixed(4)},${point.lon.toFixed(4)}`;
+  if (cache.stations[key]) return cache.stations[key];
+  const body = `[out:json][timeout:25];
+(
+  node["railway"~"^(station|halt)$"](around:3000,${point.lat},${point.lon});
+  way["railway"~"^(station|halt)$"](around:3000,${point.lat},${point.lon});
+  relation["railway"~"^(station|halt)$"](around:3000,${point.lat},${point.lon});
+  node["station"~"^(subway|train|light_rail)$"](around:3000,${point.lat},${point.lon});
+  way["station"~"^(subway|train|light_rail)$"](around:3000,${point.lat},${point.lon});
+  relation["station"~"^(subway|train|light_rail)$"](around:3000,${point.lat},${point.lon});
+  node["public_transport"="station"](around:3000,${point.lat},${point.lon});
+  way["public_transport"="station"](around:3000,${point.lat},${point.lon});
+  relation["public_transport"="station"](around:3000,${point.lat},${point.lon});
+);
+out center tags;`;
+  try {
+    let data = null;
+    let lastError = null;
+    for (const endpoint of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+      try {
+        data = await fetchJson(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            Accept: 'application/json',
+            'User-Agent': 'avito-cian-bot/1.0'
+          },
+          body: new URLSearchParams({ data: body })
+        }, 15000);
+        break;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (!data) throw lastError || new Error('empty response');
+    const seen = new Set();
+    const stations = (data.elements || []).map((item) => {
+      const tags = item.tags || {};
+      const type = stationType(tags);
+      const name = stationName(tags);
+      const lat = item.lat ?? item.center?.lat;
+      const lon = item.lon ?? item.center?.lon;
+      if (!type || !name || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      const dedupeKey = `${type}:${name.toLowerCase()}`;
+      if (seen.has(dedupeKey)) return null;
+      seen.add(dedupeKey);
+      return { type, name, distanceKm: kmBetween(point, { lat, lon }) };
+    }).filter(Boolean).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 5);
+    cache.stations[key] = stations;
+    saveGeoCache();
+    return stations;
+  } catch (e) {
+    console.error('Overpass не сработал:', e.message);
+    return [];
+  }
+}
+
+async function formatMessage(label, ad) {
+  const geo = await geocodeAd(ad);
+  const routeUrl = yandexRouteUrl(geo.point, geo.address);
+  const stations = geo.point ? await nearbyStations(geo.point) : [];
+  const lines = [ad.href];
+  if (routeUrl) lines.push(routeUrl);
+  if (geo.point) lines.push(`От Охотного ряда: ${formatKm(kmBetween(OKHOTNY_RYAD, geo.point))}`);
+  if (stations.length) {
+    lines.push('Станции:');
+    lines.push(...stations.map((station) => `${station.type} ${station.name}: ${formatKm(station.distanceKm)}`));
+  }
+  return lines.filter(Boolean).join('\n');
 }
 
 function logUrl(url) {
@@ -355,7 +555,7 @@ async function matchesAiFilter(ad, filters) {
         messages: [
           {
             role: 'system',
-            content: 'Ты фильтруешь объявления аренды недвижимости. Ответь только JSON вида {"match":true,"reason":"..."}. Учитывай количество комнат, общую площадь, площадь комнаты, залог, посредника, этаж, этажность, год, метро, цену. Если данных не хватает для включенного строгого фильтра, match=false.'
+            content: 'Ты фильтруешь объявления аренды недвижимости. Ответь только JSON вида {"match":true,"reason":"..."}. Учитывай количество комнат, общую площадь, площадь комнаты, залог, посредника, этаж, этажность, год, метро, цену. Если данных не хватает для включенного фильтра, не отклоняй объявление; отклоняй только когда известное значение явно не подходит.'
           },
           {
             role: 'user',
@@ -415,7 +615,7 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
     sentIds.add(id);
     saveSentId(id);
     saveLatestId(latestIds, latestKey, id);
-    await sendToTelegram(bot, TELEGRAM_CHAT_ID, formatMessage(label, normalizedAd));
+    await sendToTelegram(bot, TELEGRAM_CHAT_ID, await formatMessage(label, normalizedAd));
     console.log(`Отправлено: ${label} ${id}${logUrl(normalizedAd.href)}`);
     return true;
   }

@@ -4,3 +4,4 @@ dist
 *.log
 chrome-profile
 latest-ids.json
+geo-cache.json
