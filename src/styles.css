@@ -192,6 +192,10 @@ h2 {
   margin-bottom: 16px;
 }
 
+.noBottom {
+  margin-bottom: 0;
+}
+
 .two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -251,6 +255,15 @@ h2 {
   gap: 8px;
 }
 
+.toggleBlock {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: #4a5753;
+  font-size: 14px;
+  font-weight: 800;
+}
+
 .toggle {
   display: inline-flex;
   align-items: center;
@@ -275,6 +288,12 @@ h2 {
   border-color: #0f8b6d;
   background: #e4f5ef;
   color: #0a624d;
+}
+
+.checkRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .targetList {

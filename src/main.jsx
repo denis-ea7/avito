@@ -21,6 +21,12 @@ const defaultConfig = {
   rooms: [1],
   priceMin: 14000,
   priceMax: 40000,
+  flatRooms: [1],
+  roomFlatRooms: [],
+  flatPriceMin: 14000,
+  flatPriceMax: 40000,
+  roomPriceMin: 14000,
+  roomPriceMax: 40000,
   totalAreaMin: '',
   totalAreaMax: '',
   roomAreaMin: '',
@@ -36,6 +42,8 @@ const defaultConfig = {
   floorsTotalMax: '',
   sellerType: 'any',
   deposit: 'any',
+  roomOwnerOnly: false,
+  roomNoDepositOnly: false,
   aiEnabled: false,
   aiProvider: 'deepseek',
   aiModel: 'deepseek-chat',
@@ -54,11 +62,9 @@ function toRequest(path, options = {}) {
   });
 }
 
-function ToggleGroup({ label, options, value, onChange }) {
+function ToggleGroup({ label, options, value, onChange, variant = 'fieldset' }) {
   const selected = Array.isArray(value) ? value : [];
-  return (
-    <fieldset className="fieldSet">
-      <legend>{label}</legend>
+  const content = (
       <div className="toggleGrid">
         {options.map(([id, text]) => (
           <label className={selected.includes(id) ? 'toggle active' : 'toggle'} key={id}>
@@ -76,6 +82,19 @@ function ToggleGroup({ label, options, value, onChange }) {
           </label>
         ))}
       </div>
+  );
+  if (variant === 'block') {
+    return (
+      <div className="toggleBlock">
+        <div>{label}</div>
+        {content}
+      </div>
+    );
+  }
+  return (
+    <fieldset className="fieldSet">
+      <legend>{label}</legend>
+      {content}
     </fieldset>
   );
 }
@@ -90,6 +109,19 @@ function NumberInput({ label, value, onChange, placeholder }) {
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value === '' ? '' : Number(event.target.value))}
       />
+    </label>
+  );
+}
+
+function CheckboxField({ label, checked, onChange }) {
+  return (
+    <label className="check inlineCheck">
+      <input
+        type="checkbox"
+        checked={Boolean(checked)}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>{label}</span>
     </label>
   );
 }
@@ -224,20 +256,38 @@ function App() {
             <ToggleGroup label="Тип объекта" options={propertyOptions} value={config.propertyTypes} onChange={(value) => updateConfig('propertyTypes', value)} />
           </div>
 
-          <ToggleGroup label="Количество комнат" options={roomOptions} value={config.rooms} onChange={(value) => updateConfig('rooms', value.map(Number))} />
+          <fieldset className="fieldSet">
+            <legend>Квартиры</legend>
+            <ToggleGroup variant="block" label="Количество комнат" options={roomOptions} value={config.flatRooms || config.rooms} onChange={(value) => updateConfig('flatRooms', value.map(Number))} />
+            <div className="grid two noBottom">
+              <NumberInput label="Цена квартиры от" value={config.flatPriceMin} onChange={(value) => updateConfig('flatPriceMin', value)} />
+              <NumberInput label="Цена квартиры до" value={config.flatPriceMax} onChange={(value) => updateConfig('flatPriceMax', value)} />
+            </div>
+          </fieldset>
 
-          <div className="grid four">
-            <NumberInput label="Цена от" value={config.priceMin} onChange={(value) => updateConfig('priceMin', value)} />
-            <NumberInput label="Цена до" value={config.priceMax} onChange={(value) => updateConfig('priceMax', value)} />
+          <fieldset className="fieldSet">
+            <legend>Комнаты</legend>
+            <ToggleGroup variant="block" label="Комнат в квартире" options={roomOptions} value={config.roomFlatRooms} onChange={(value) => updateConfig('roomFlatRooms', value.map(Number))} />
+            <div className="grid four">
+              <NumberInput label="Цена комнаты от" value={config.roomPriceMin} onChange={(value) => updateConfig('roomPriceMin', value)} />
+              <NumberInput label="Цена комнаты до" value={config.roomPriceMax} onChange={(value) => updateConfig('roomPriceMax', value)} />
+              <NumberInput label="Площадь комнаты от" value={config.roomAreaMin} onChange={(value) => updateConfig('roomAreaMin', value)} />
+              <NumberInput label="Площадь комнаты до" value={config.roomAreaMax} onChange={(value) => updateConfig('roomAreaMax', value)} />
+            </div>
+            <div className="checkRow">
+              <CheckboxField label="Только собственник" checked={config.roomOwnerOnly} onChange={(value) => updateConfig('roomOwnerOnly', value)} />
+              <CheckboxField label="Только без залога" checked={config.roomNoDepositOnly} onChange={(value) => updateConfig('roomNoDepositOnly', value)} />
+            </div>
+          </fieldset>
+
+          <div className="grid two">
             <NumberInput label="Общая площадь от" value={config.totalAreaMin} onChange={(value) => updateConfig('totalAreaMin', value)} />
             <NumberInput label="Общая площадь до" value={config.totalAreaMax} onChange={(value) => updateConfig('totalAreaMax', value)} />
           </div>
 
-          <div className="grid four">
-            <NumberInput label="Площадь комнаты от" value={config.roomAreaMin} onChange={(value) => updateConfig('roomAreaMin', value)} />
-            <NumberInput label="Площадь комнаты до" value={config.roomAreaMax} onChange={(value) => updateConfig('roomAreaMax', value)} />
+          <div className="grid two">
             <label className="field">
-              <span>Кто сдает</span>
+              <span>Кто сдает, если известно</span>
               <select value={config.sellerType || 'any'} onChange={(event) => updateConfig('sellerType', event.target.value)}>
                 <option value="any">Не важно</option>
                 <option value="owner">Собственник</option>
@@ -245,7 +295,7 @@ function App() {
               </select>
             </label>
             <label className="field">
-              <span>Залог</span>
+              <span>Залог, если известно</span>
               <select value={config.deposit || 'any'} onChange={(event) => updateConfig('deposit', event.target.value)}>
                 <option value="any">Не важно</option>
                 <option value="yes">Есть залог</option>

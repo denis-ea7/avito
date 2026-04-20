@@ -15,6 +15,14 @@
   ],
   "priceMin": 14000,
   "priceMax": 40000,
+  "flatRooms": [
+    1
+  ],
+  "roomFlatRooms": [],
+  "flatPriceMin": 14000,
+  "flatPriceMax": 40000,
+  "roomPriceMin": 14000,
+  "roomPriceMax": 40000,
   "totalAreaMin": "",
   "totalAreaMax": "",
   "roomAreaMin": "",
@@ -30,6 +38,8 @@
   "floorsTotalMax": "",
   "sellerType": "any",
   "deposit": "any",
+  "roomOwnerOnly": false,
+  "roomNoDepositOnly": false,
   "aiEnabled": false,
   "aiProvider": "deepseek",
   "aiModel": "deepseek-chat",
