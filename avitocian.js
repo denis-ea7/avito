@@ -373,13 +373,21 @@ function formatKm(value) {
 }
 
 function addressForGeo(ad) {
+  const locationParts = [ad.location]
+    .flatMap((value) => String(value || '').split(/\n| · |;|\|/).map(compactText))
+    .filter(Boolean);
   const parts = [ad.location, ad.desc]
     .flatMap((value) => String(value || '').split(/\n| · |;|\|/).map(compactText))
     .filter(Boolean);
   const addressMarker = /(ул\.|улица|проспект|пр-кт|шоссе|переулок|пер\.|проезд|бульвар|бул\.|набережная|наб\.|площадь|пл\.|дом|д\.|корпус|к\.|мкр|микрорайон|посёлок|поселок|деревня|село)/i;
   const cityMarker = /(москва|московская|химки|подольск|балашиха|люберцы|мытищи|красногорск|долгопрудный|видное|реутов|котельники|пушкино|одинцово|домодедово|щелково|лобня|дмитров|зеленоград)/i;
+  const stationMarker = /(метро|мцд|станция|ж\/д|жд|электричк)/i;
   const titleLike = /(квартира|комната|койко-место).{0,80}(аренду|снять|сдается|сдаётся|эт\.|м²|м2)/i;
   const selected = parts.filter((part) => !titleLike.test(part) && (addressMarker.test(part) || (cityMarker.test(part) && /\d/.test(part)))).slice(0, 4);
+  if (!selected.length) {
+    const fallback = locationParts.find((part) => !titleLike.test(part) && (addressMarker.test(part) || cityMarker.test(part) || stationMarker.test(part)));
+    if (fallback) selected.push(fallback);
+  }
   if (!selected.length) return '';
   const value = (selected.length ? selected.join(', ') : parts[0] || '')
     .replace(/ул\./gi, 'улица')
@@ -399,9 +407,8 @@ function addressForGeo(ad) {
 }
 
 function yandexRouteUrl(point, address) {
-  if (!point) return '';
   const from = `${OKHOTNY_RYAD.lat},${OKHOTNY_RYAD.lon}`;
-  const to = `${point.lat},${point.lon}`;
+  const to = point ? `${point.lat},${point.lon}` : compactText(address);
   if (!to) return '';
   return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(to)}&rtt=mt`;
 }
