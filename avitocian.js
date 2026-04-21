@@ -372,38 +372,81 @@ function formatKm(value) {
   return value < 1 ? `${Math.round(value * 1000)} м` : `${value.toFixed(value < 10 ? 1 : 0)} км`;
 }
 
-function addressForGeo(ad) {
-  const locationParts = [ad.location]
-    .flatMap((value) => String(value || '').split(/\n| · |;|\|/).map(compactText))
-    .filter(Boolean);
-  const parts = [ad.location, ad.desc]
-    .flatMap((value) => String(value || '').split(/\n| · |;|\|/).map(compactText))
-    .filter(Boolean);
-  const addressMarker = /(ул\.|улица|проспект|пр-кт|шоссе|переулок|пер\.|проезд|бульвар|бул\.|набережная|наб\.|площадь|пл\.|дом|д\.|корпус|к\.|мкр|микрорайон|посёлок|поселок|деревня|село)/i;
-  const cityMarker = /(москва|московская|химки|подольск|балашиха|люберцы|мытищи|красногорск|долгопрудный|видное|реутов|котельники|пушкино|одинцово|домодедово|щелково|лобня|дмитров|зеленоград)/i;
-  const stationMarker = /(метро|мцд|станция|ж\/д|жд|электричк)/i;
-  const titleLike = /(квартира|комната|койко-место).{0,80}(аренду|снять|сдается|сдаётся|эт\.|м²|м2)/i;
-  const selected = parts.filter((part) => !titleLike.test(part) && (addressMarker.test(part) || (cityMarker.test(part) && /\d/.test(part)))).slice(0, 4);
-  if (!selected.length) {
-    const fallback = locationParts.find((part) => !titleLike.test(part) && (addressMarker.test(part) || cityMarker.test(part) || stationMarker.test(part)));
-    if (fallback) selected.push(fallback);
-  }
-  if (!selected.length) return '';
-  const value = (selected.length ? selected.join(', ') : parts[0] || '')
+const ADDRESS_MARKER = /(ул\.|улица|проспект|пр-кт|шоссе|переулок|пер\.|проезд|бульвар|бул\.|набережная|наб\.|площадь|пл\.|дом|д\.|корпус|к\.|строен(?:ие)?|стр\.|мкр|микрорайон|посёлок|поселок|деревня|село|аллея|тупик|квартал)/i;
+const CITY_MARKER = /(москва|московская область|московская обл|химки|подольск|балашиха|люберцы|мытищи|красногорск|долгопрудный|видное|реутов|котельники|пушкино|одинцово|домодедово|щелково|щёлково|лобня|дмитров|зеленоград|зеленоградский|корол[её]в|ивантеевка|раменское|жуковский|пушкин[оа]|сходня|нахабино|апрелевка|железнодорожный)/i;
+const STATION_MARKER = /(метро|мцд|станция|ж\/д|жд|электричк|платформа)/i;
+const TITLE_LIKE = /(квартира|комната|койко-место).{0,80}(аренду|снять|сдается|сдаётся|эт\.|м²|м2)/i;
+
+function normalizeAddressCandidate(value) {
+  return compactText(value)
     .replace(/ул\./gi, 'улица')
     .replace(/пр-кт|просп\./gi, 'проспект')
     .replace(/пер\./gi, 'переулок')
     .replace(/бул\./gi, 'бульвар')
     .replace(/наб\./gi, 'набережная')
     .replace(/пл\./gi, 'площадь')
+    .replace(/стр\./gi, 'строение')
     .replace(/\bд\./gi, 'дом')
+    .replace(/\bк\./gi, 'корпус')
     .replace(/от\s+\d+\s+мин\.?/gi, '')
+    .replace(/\b(метро|мцд|станция)\b.*$/i, '')
+    .replace(/\b(пешком|на транспорте|транспортом)\b.*$/i, '')
     .replace(/(\d)([А-ЯЁ])/g, '$1, $2')
     .replace(/\s+,/g, ',')
+    .replace(/,+/g, ',')
     .slice(0, 300)
     .trim();
-  if (!value) return '';
-  return value;
+}
+
+function regionHint(text) {
+  const normalized = compactText(text).toLowerCase();
+  if (!normalized) return '';
+  if (/москва\b/.test(normalized)) return 'Москва';
+  if (/московская область|московская обл/.test(normalized)) return 'Московская область';
+  if (/(химки|подольск|балашиха|люберцы|мытищи|красногорск|долгопрудный|видное|реутов|котельники|пушкино|одинцово|домодедово|щелково|щёлково|лобня|дмитров|зеленоград|корол[её]в|ивантеевка|раменское|жуковский|сходня|нахабино|апрелевка|железнодорожный)\b/.test(normalized)) return 'Московская область';
+  return '';
+}
+
+function addressScore(value) {
+  if (!value || TITLE_LIKE.test(value)) return -100;
+  let score = 0;
+  if (ADDRESS_MARKER.test(value)) score += 40;
+  if (CITY_MARKER.test(value)) score += 25;
+  if (/\b\d{1,4}[а-яё]?(?:\/\d+)?\b/i.test(value)) score += 18;
+  if (/,/.test(value)) score += 5;
+  if (STATION_MARKER.test(value)) score -= 35;
+  if (/\b(мин|пешком|транспорт|район|округ|жк)\b/i.test(value)) score -= 15;
+  if (value.length < 12) score -= 20;
+  return score;
+}
+
+function addressCandidates(ad) {
+  const raw = [ad.location, ad.desc].filter(Boolean).join('\n');
+  const hint = regionHint(raw);
+  const parts = raw
+    .split(/\n| · |;|\|/)
+    .map(compactText)
+    .filter(Boolean);
+  const labeled = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    const inline = part.match(/^(?:адрес|расположение|местоположение)\s*[:\-]?\s*(.+)$/i);
+    if (inline?.[1]) labeled.push(inline[1]);
+    if (/^(?:адрес|расположение|местоположение)\s*[:\-]?$/i.test(part) && parts[index + 1]) labeled.push(parts[index + 1]);
+  }
+  const candidates = [...labeled, ...parts]
+    .map(normalizeAddressCandidate)
+    .filter(Boolean)
+    .filter((value) => !TITLE_LIKE.test(value))
+    .map((value) => (hint && !CITY_MARKER.test(value) ? `${value}, ${hint}` : value))
+    .map((value) => value.replace(/,\s*(Москва|Московская область),\s*\1/i, ', $1'))
+    .map((value) => value.replace(/,\s*Россия$/i, ''))
+    .filter((value) => addressScore(value) >= 20);
+  return Array.from(new Set(candidates)).sort((left, right) => addressScore(right) - addressScore(left));
+}
+
+function addressForGeo(ad) {
+  return addressCandidates(ad)[0] || '';
 }
 
 function yandexRouteUrl(point, address) {
@@ -426,29 +469,32 @@ async function fetchJson(url, options = {}, timeoutMs = 12000) {
 }
 
 async function geocodeAd(ad) {
-  const address = addressForGeo(ad);
+  const candidates = addressCandidates(ad);
+  const address = candidates[0] || '';
   if (!address) return { address: '', point: null };
   const cache = getGeoCache();
-  if (cache.geocode[address]) return { address, point: cache.geocode[address] };
+  for (const candidate of candidates) {
+    if (cache.geocode[candidate]) return { address: candidate, point: cache.geocode[candidate] };
+  }
   try {
-    const queries = Array.from(new Set([
-      address,
-      address.replace(/,/g, ' '),
-      `${address} Москва Россия`,
-      `${address} Московская область Россия`,
-      `${address} Россия`
-    ].map(compactText).filter(Boolean)));
-    for (const query of queries) {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`;
-      const data = await fetchJson(url, { headers: { 'User-Agent': 'avito-cian-bot/1.0' } }, 10000);
-      const item = Array.isArray(data) ? data[0] : null;
-      const point = item ? { lat: Number(item.lat), lon: Number(item.lon), name: item.display_name || '' } : null;
-      if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
-        cache.geocode[address] = point;
-        saveGeoCache();
-        return { address, point };
+    for (const candidate of candidates) {
+      const queries = Array.from(new Set([
+        candidate,
+        candidate.replace(/,/g, ' '),
+        `${candidate} Россия`
+      ].map(compactText).filter(Boolean)));
+      for (const query of queries) {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`;
+        const data = await fetchJson(url, { headers: { 'User-Agent': 'avito-cian-bot/1.0' } }, 10000);
+        const item = Array.isArray(data) ? data[0] : null;
+        const point = item ? { lat: Number(item.lat), lon: Number(item.lon), name: item.display_name || '' } : null;
+        if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
+          cache.geocode[candidate] = point;
+          saveGeoCache();
+          return { address: candidate, point };
+        }
+        await sleep(1100);
       }
-      await sleep(1100);
     }
   } catch (e) {
     console.error('Геокодинг не сработал:', e.message);
