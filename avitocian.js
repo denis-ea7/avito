@@ -38,7 +38,7 @@ const WORK_HOURS = {
   to: Number(process.env.WORK_HOUR_TO || 23)
 };
 const AVITO_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
-const OKHOTNY_RYAD = { lat: 55.755804, lon: 37.614608 };
+const OKHOTNY_RYAD = { lat: 55.756762, lon: 37.616434 };
 
 puppeteer.use(stealthPlugin());
 
@@ -466,11 +466,22 @@ function addressForGeo(ad) {
   return addressCandidates(ad)[0] || '';
 }
 
-function yandexRouteUrl(point, address) {
-  const from = `${OKHOTNY_RYAD.lat},${OKHOTNY_RYAD.lon}`;
-  const to = point ? `${point.lat},${point.lon}` : compactText(address);
-  if (!to) return '';
-  return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(to)}&rtt=mt`;
+function routeDebugLine(label, geo) {
+  const address = compactText(geo?.address || '') || 'нет';
+  const point = geo?.point && Number.isFinite(geo.point.lat) && Number.isFinite(geo.point.lon)
+    ? `${geo.point.lat.toFixed(6)},${geo.point.lon.toFixed(6)}`
+    : 'нет';
+  const source = geo?.source || 'none';
+  return `Маршрут ${label}: адрес="${address}" координаты=${point} источник=${source}`;
+}
+
+function twoGisRouteUrl(point) {
+  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return '';
+  const from = `${OKHOTNY_RYAD.lon},${OKHOTNY_RYAD.lat}`;
+  const to = `${point.lon},${point.lat}`;
+  const centerLon = ((OKHOTNY_RYAD.lon + point.lon) / 2).toFixed(6);
+  const centerLat = ((OKHOTNY_RYAD.lat + point.lat) / 2).toFixed(6);
+  return `https://2gis.ru/moscow/directions/points/${from}|${to}?m=${centerLon},${centerLat}/12.31`;
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
@@ -493,15 +504,16 @@ async function geocodeAd(ad) {
         lat: Number(ad.coords.lat),
         lon: Number(ad.coords.lon),
         name: compactText(ad.address || '')
-      }
+      },
+      source: 'listing-coords'
     };
   }
   const candidates = addressCandidates(ad);
   const address = candidates[0] || '';
-  if (!address) return { address: '', point: null };
+  if (!address) return { address: '', point: null, source: 'none' };
   const cache = getGeoCache();
   for (const candidate of candidates) {
-    if (cache.geocode[candidate]) return { address: candidate, point: cache.geocode[candidate] };
+    if (cache.geocode[candidate]) return { address: candidate, point: cache.geocode[candidate], source: 'cache' };
   }
   try {
     for (const candidate of candidates) {
@@ -518,7 +530,7 @@ async function geocodeAd(ad) {
         if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
           cache.geocode[candidate] = point;
           saveGeoCache();
-          return { address: candidate, point };
+          return { address: candidate, point, source: 'geocoder' };
         }
         await sleep(1100);
       }
@@ -526,7 +538,7 @@ async function geocodeAd(ad) {
   } catch (e) {
     console.error('Геокодинг не сработал:', e.message);
   }
-  return { address, point: null };
+  return { address, point: null, source: 'no-point' };
 }
 
 function stationType(tags = {}) {
@@ -603,7 +615,9 @@ out center tags;`;
 
 async function formatMessage(label, ad) {
   const geo = await geocodeAd(ad);
-  const routeUrl = yandexRouteUrl(geo.point, geo.address);
+  const routeUrl = twoGisRouteUrl(geo.point);
+  console.log(routeDebugLine(label, geo));
+  if (routeUrl) console.log(`Маршрут ${label}: 2ГИС ${routeUrl}`);
   const stations = geo.point ? await nearbyStations(geo.point) : [];
   const lines = [escapeHtml(ad.href)];
   if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
