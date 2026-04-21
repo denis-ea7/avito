@@ -469,6 +469,16 @@ async function fetchJson(url, options = {}, timeoutMs = 12000) {
 }
 
 async function geocodeAd(ad) {
+  if (Number.isFinite(ad?.coords?.lat) && Number.isFinite(ad?.coords?.lon)) {
+    return {
+      address: compactText(ad.address || addressForGeo(ad)),
+      point: {
+        lat: Number(ad.coords.lat),
+        lon: Number(ad.coords.lon),
+        name: compactText(ad.address || '')
+      }
+    };
+  }
   const candidates = addressCandidates(ad);
   const address = candidates[0] || '';
   if (!address) return { address: '', point: null };
@@ -696,8 +706,57 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);
     const pageTitle = await page.title().catch(() => '');
-    const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
-    return { ...ad, title: ad.title || pageTitle, desc: [ad.desc, pageTitle, detail].filter(Boolean).join('\n') };
+    const extra = await page.evaluate(() => {
+      const bodyText = document.body?.innerText?.slice(0, 15000) || '';
+      const readStructured = () => {
+        const readFromText = (text) => {
+          const itemMatch = text.match(/"item":\{[\s\S]*?"address":"([^"]+)"[\s\S]*?"coords":\{"lat":([0-9.]+),"lng":([0-9.]+)\}/);
+          if (itemMatch) {
+            return {
+              address: itemMatch[1],
+              coords: { lat: Number(itemMatch[2]), lon: Number(itemMatch[3]) }
+            };
+          }
+          const addressMatch = text.match(/"address":"([^"]+)"/);
+          const itemCoordsMatch = text.match(/"item":\{[\s\S]*?"coords":\{"lat":([0-9.]+),"lng":([0-9.]+)\}/);
+          if (addressMatch || itemCoordsMatch) {
+            return {
+              address: addressMatch?.[1] || '',
+              coords: itemCoordsMatch ? { lat: Number(itemCoordsMatch[1]), lon: Number(itemCoordsMatch[2]) } : null
+            };
+          }
+          return null;
+        };
+        for (const script of Array.from(document.querySelectorAll('script'))) {
+          const raw = script.textContent || '';
+          if (!raw) continue;
+          const variants = [raw];
+          if (raw.includes('%7B')) {
+            try {
+              variants.push(decodeURIComponent(raw));
+            } catch (_) {}
+          }
+          for (const text of variants) {
+            const result = readFromText(text);
+            if (result) return result;
+          }
+        }
+        return { address: '', coords: null };
+      };
+      const structured = readStructured();
+      return {
+        detail: bodyText,
+        address: structured.address,
+        coords: structured.coords
+      };
+    }).catch(() => ({ detail: '', address: '', coords: null }));
+    return {
+      ...ad,
+      title: ad.title || pageTitle,
+      address: compactText(extra.address || ad.address || ''),
+      coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon) ? extra.coords : ad.coords || null,
+      desc: [ad.desc, pageTitle, extra.detail].filter(Boolean).join('\n')
+    };
   } catch (_) {
     return ad;
   } finally {
