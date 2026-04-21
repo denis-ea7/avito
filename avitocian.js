@@ -398,6 +398,23 @@ function normalizeAddressCandidate(value) {
     .trim();
 }
 
+function pointFromMapUrl(url) {
+  try {
+    const parsed = new URL(url, 'https://maps.yandex.ru');
+    const pt = parsed.searchParams.get('pt');
+    if (pt) {
+      const [lon, lat] = pt.split(',').map((value) => Number(value));
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+    }
+    const ll = parsed.searchParams.get('ll');
+    if (ll) {
+      const [lon, lat] = ll.split(',').map((value) => Number(value));
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+    }
+  } catch (_) {}
+  return null;
+}
+
 function regionHint(text) {
   const normalized = compactText(text).toLowerCase();
   if (!normalized) return '';
@@ -421,7 +438,7 @@ function addressScore(value) {
 }
 
 function addressCandidates(ad) {
-  const raw = [ad.location, ad.desc].filter(Boolean).join('\n');
+  const raw = [ad.address, ad.location, ad.desc].filter(Boolean).join('\n');
   const hint = regionHint(raw);
   const parts = raw
     .split(/\n| · |;|\|/)
@@ -708,6 +725,7 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     const pageTitle = await page.title().catch(() => '');
     const extra = await page.evaluate(() => {
       const bodyText = document.body?.innerText?.slice(0, 15000) || '';
+      const normalizeAddress = (value) => String(value || '').replace(/\s+/g, ' ').replace(/На карте.*$/i, '').trim();
       const readStructured = () => {
         const readFromText = (text) => {
           const itemMatch = text.match(/"item":\{[\s\S]*?"address":"([^"]+)"[\s\S]*?"coords":\{"lat":([0-9.]+),"lng":([0-9.]+)\}/);
@@ -744,9 +762,12 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
         return { address: '', coords: null };
       };
       const structured = readStructured();
+      const geoAddress = siteType === 'cian'
+        ? normalizeAddress(document.querySelector('[data-name="Geo"]')?.innerText || '')
+        : '';
       return {
         detail: bodyText,
-        address: structured.address,
+        address: structured.address || geoAddress,
         coords: structured.coords
       };
     }).catch(() => ({ detail: '', address: '', coords: null }));
@@ -764,14 +785,38 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
   }
 }
 
-async function enrichPlaywrightAd(context, ad) {
+async function enrichPlaywrightAd(context, ad, siteType) {
   if (!ad.href) return ad;
   const page = await context.newPage();
   try {
     await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);
-    const detail = await page.evaluate(() => document.body?.innerText?.slice(0, 15000) || '').catch(() => '');
-    return { ...ad, desc: [ad.desc, detail].filter(Boolean).join('\n') };
+    const extra = await page.evaluate((currentSiteType) => {
+      const bodyText = document.body?.innerText?.slice(0, 15000) || '';
+      const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const mapLink = Array.from(document.querySelectorAll('a'))
+        .map((link) => ({ text: compact(link.innerText), href: link.href || link.getAttribute('href') || '' }))
+        .find((link) => /Яндекс/.test(link.text) && /maps\.yandex|maps\.yandex\.ru|yandex\.ru\/maps/.test(link.href));
+      const lineAddress = bodyText
+        .split('\n')
+        .map(compact)
+        .find((line) => /(ул\.|улица|проспект|проезд|шоссе|переулок|бульвар|набережная|площадь|аллея|тупик|квартал)/i.test(line) && /(москва|московская|химки|люберцы|подольск|мытищи|красногорск|долгопрудный|реутов|одинцово|домодедово|лобня|зеленоград)/i.test(line));
+      const exactAddress = currentSiteType === 'yandex'
+        ? bodyText.split('\n').map(compact).find((line) => /(москва|московская)/i.test(line) && /(ул\.|улица|проспект|проезд|шоссе|переулок|бульвар|набережная|площадь)/i.test(line))
+        : lineAddress;
+      return {
+        detail: bodyText,
+        address: exactAddress || lineAddress || '',
+        mapHref: mapLink?.href || ''
+      };
+    }, siteType).catch(() => ({ detail: '', address: '', mapHref: '' }));
+    const coords = pointFromMapUrl(extra.mapHref);
+    return {
+      ...ad,
+      address: compactText(extra.address || ad.address || ''),
+      coords: coords || ad.coords || null,
+      desc: [ad.desc, extra.detail].filter(Boolean).join('\n')
+    };
   } catch (_) {
     return ad;
   } finally {
@@ -898,7 +943,7 @@ async function parseYandex(context, page, target, filters, sentIds, latestIds, b
       };
     });
   }).catch(() => []);
-  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad));
+  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad, 'yandex'));
 }
 
 async function parseDomclick(context, page, target, filters, sentIds, latestIds, bot) {
@@ -921,7 +966,7 @@ async function parseDomclick(context, page, target, filters, sentIds, latestIds,
       };
     });
   }).catch(() => []);
-  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad));
+  return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad, 'domclick'));
 }
 
 async function processTarget(target, filters, sentIds, latestIds, bot) {
