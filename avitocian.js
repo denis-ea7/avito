@@ -415,41 +415,12 @@ function pointFromMapUrl(url) {
   return null;
 }
 
-function normalizePoint(lat, lon, name = '') {
-  const point = { lat: Number(lat), lon: Number(lon), name: compactText(name) };
-  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return null;
-  if (point.lat < 54 || point.lat > 57 || point.lon < 35 || point.lon > 41) return null;
-  return point;
-}
-
 function decodeScriptString(value) {
   return String(value || '')
     .replace(/\\u([\da-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\\x([\da-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\\"/g, '"')
     .replace(/\\\\/g, '\\');
-}
-
-function extractPointFromRaw(raw) {
-  const text = String(raw || '');
-  const patterns = [
-    { regex: /"item"\s*:\s*\{[\s\S]{0,2500}?"coords"\s*:\s*\{\s*"lat"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lat-lon' },
-    { regex: /"item"\s*:\s*\{[\s\S]{0,2500}?"coords"\s*:\s*\{\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lon-lat' },
-    { regex: /"coordinates"\s*:\s*\{\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lat-lon' },
-    { regex: /"coordinates"\s*:\s*\{\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lon-lat' },
-    { regex: /"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lat-lon' },
-    { regex: /"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lon-lat' },
-    { regex: /POINT\(\s*([0-9.]+)\s+([0-9.]+)\s*\)/i, order: 'lon-lat' }
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern.regex);
-    if (!match) continue;
-    const point = pattern.order === 'lat-lon'
-      ? normalizePoint(match[1], match[2])
-      : normalizePoint(match[2], match[1]);
-    if (point) return point;
-  }
-  return null;
 }
 
 function extractAddressFromRaw(raw) {
@@ -865,14 +836,11 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
       };
     }).catch(() => ({ detail: '', address: '', coords: null }));
     const rawAddress = extractAddressFromRaw(rawHtml);
-    const rawPoint = extractPointFromRaw(rawHtml);
     return {
       ...ad,
       title: ad.title || pageTitle,
       address: compactText(extra.address || rawAddress || ad.address || ''),
-      coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon)
-        ? extra.coords
-        : rawPoint || ad.coords || null,
+      coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon) ? extra.coords : ad.coords || null,
       desc: [ad.desc, pageTitle, extra.detail].filter(Boolean).join('\n')
     };
   } catch (_) {
@@ -908,7 +876,7 @@ async function enrichPlaywrightAd(context, ad, siteType) {
         mapHref: mapLink?.href || ''
       };
     }, siteType).catch(() => ({ detail: '', address: '', mapHref: '' }));
-    const coords = pointFromMapUrl(extra.mapHref) || extractPointFromRaw(rawHtml);
+    const coords = pointFromMapUrl(extra.mapHref);
     const rawAddress = extractAddressFromRaw(rawHtml);
     return {
       ...ad,
