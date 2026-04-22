@@ -376,6 +376,7 @@ const ADDRESS_MARKER = /(ул\.|улица|проспект|пр-кт|шоссе
 const CITY_MARKER = /(москва|московская область|московская обл|химки|подольск|балашиха|люберцы|мытищи|красногорск|долгопрудный|видное|реутов|котельники|пушкино|одинцово|домодедово|щелково|щёлково|лобня|дмитров|зеленоград|зеленоградский|корол[её]в|ивантеевка|раменское|жуковский|пушкин[оа]|сходня|нахабино|апрелевка|железнодорожный)/i;
 const STATION_MARKER = /(метро|мцд|станция|ж\/д|жд|электричк|платформа)/i;
 const TITLE_LIKE = /(квартира|комната|койко-место).{0,80}(аренду|снять|сдается|сдаётся|эт\.|м²|м2)/i;
+const SEARCH_LIKE = /(снять|сдам|сдается|сдаётся|объявление|база циан|на авито|снять квартиру|снять комнату)/i;
 
 function normalizeAddressCandidate(value) {
   return compactText(value)
@@ -450,7 +451,7 @@ function regionHint(text) {
 }
 
 function addressScore(value) {
-  if (!value || TITLE_LIKE.test(value)) return -100;
+  if (!value || TITLE_LIKE.test(value) || SEARCH_LIKE.test(value)) return -100;
   let score = 0;
   if (ADDRESS_MARKER.test(value)) score += 40;
   if (CITY_MARKER.test(value)) score += 25;
@@ -460,6 +461,52 @@ function addressScore(value) {
   if (/\b(мин|пешком|транспорт|район|округ|жк)\b/i.test(value)) score -= 15;
   if (value.length < 12) score -= 20;
   return score;
+}
+
+function isPreciseAddress(value) {
+  const text = compactText(value);
+  if (!text || addressScore(text) < 20) return false;
+  if (!ADDRESS_MARKER.test(text)) return false;
+  return /\b\d{1,4}[а-яё]?(?:\/\d+)?\b/i.test(text) || /(улица|проспект|шоссе|переулок|проезд|бульвар|набережная|площадь|дом|корпус|строение|микрорайон|квартал)/i.test(text);
+}
+
+function hrefAddressFallback(href) {
+  try {
+    const parsed = new URL(href);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const cityPart = parts[0] || '';
+    const normalized = cityPart
+      .replace(/^moskovskaya_oblast_/i, '')
+      .replace(/^moskva_i_mo$/i, 'moskva moskovskaya oblast')
+      .replace(/^moskva$/i, 'moskva')
+      .replace(/_/g, ' ')
+      .trim();
+    const dictionary = [
+      ['moskva', 'Москва'],
+      ['moskovskaya oblast', 'Московская область'],
+      ['krasnogorsk', 'Красногорск'],
+      ['lytkarino', 'Лыткарино'],
+      ['orehovo zuevo', 'Орехово-Зуево'],
+      ['orekhovo zuevo', 'Орехово-Зуево'],
+      ['domodedovo', 'Домодедово'],
+      ['podolsk', 'Подольск'],
+      ['khimki', 'Химки'],
+      ['lyubertsy', 'Люберцы'],
+      ['vidnoe', 'Видное'],
+      ['odintsovo', 'Одинцово'],
+      ['reutov', 'Реутов'],
+      ['dolgoprudnyy', 'Долгопрудный'],
+      ['mytishchi', 'Мытищи']
+    ];
+    let value = normalized;
+    for (const [from, to] of dictionary) {
+      value = value.replace(new RegExp(`\\b${from}\\b`, 'gi'), to);
+    }
+    value = compactText(value);
+    return value && CITY_MARKER.test(value) ? value : '';
+  } catch (_) {
+    return '';
+  }
 }
 
 function addressCandidates(ad) {
@@ -479,12 +526,13 @@ function addressCandidates(ad) {
   const candidates = [...labeled, ...parts]
     .map(normalizeAddressCandidate)
     .filter(Boolean)
-    .filter((value) => !TITLE_LIKE.test(value))
+    .filter((value) => !TITLE_LIKE.test(value) && !SEARCH_LIKE.test(value))
     .map((value) => (hint && !CITY_MARKER.test(value) ? `${value}, ${hint}` : value))
     .map((value) => value.replace(/,\s*(Москва|Московская область),\s*\1/i, ', $1'))
     .map((value) => value.replace(/,\s*Россия$/i, ''))
     .filter((value) => addressScore(value) >= 20);
-  return Array.from(new Set(candidates)).sort((left, right) => addressScore(right) - addressScore(left));
+  const fallback = hrefAddressFallback(ad.href || '');
+  return Array.from(new Set([...candidates, fallback].filter(Boolean))).sort((left, right) => addressScore(right) - addressScore(left));
 }
 
 function addressForGeo(ad) {
@@ -507,6 +555,12 @@ function twoGisRouteUrl(point) {
   const centerLon = ((OKHOTNY_RYAD.lon + point.lon) / 2).toFixed(6);
   const centerLat = ((OKHOTNY_RYAD.lat + point.lat) / 2).toFixed(6);
   return `https://2gis.ru/moscow/directions/points/${from}|${to}?m=${centerLon},${centerLat}/12.31`;
+}
+
+function twoGisSearchUrl(address) {
+  const query = compactText(address);
+  if (!query) return '';
+  return `https://2gis.ru/search/${encodeURIComponent(query)}`;
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
@@ -556,14 +610,16 @@ async function geocodeAd(ad) {
     };
   }
   const candidates = addressCandidates(ad);
-  const address = candidates[0] || '';
+  const preciseCandidates = candidates.filter(isPreciseAddress);
+  const address = preciseCandidates[0] || candidates[0] || '';
   if (!address) return { address: '', point: null, source: 'none' };
+  if (!preciseCandidates.length) return { address, point: null, source: 'search-only' };
   const cache = getGeoCache();
-  for (const candidate of candidates) {
+  for (const candidate of preciseCandidates) {
     if (cache.geocode[candidate]) return { address: candidate, point: cache.geocode[candidate], source: 'cache' };
   }
   try {
-    for (const candidate of candidates) {
+    for (const candidate of preciseCandidates) {
       const queries = Array.from(new Set([
         candidate,
         candidate.replace(/,/g, ' '),
@@ -664,7 +720,7 @@ out center tags;`;
 
 async function formatMessage(label, ad) {
   const geo = await geocodeAd(ad);
-  const routeUrl = twoGisRouteUrl(geo.point);
+  const routeUrl = geo.point ? twoGisRouteUrl(geo.point) : twoGisSearchUrl(geo.address);
   console.log(routeDebugLine(label, geo));
   if (routeUrl) console.log(`Маршрут ${label}: 2ГИС ${routeUrl}`);
   const stations = geo.point ? await nearbyStations(geo.point) : [];
