@@ -415,6 +415,60 @@ function pointFromMapUrl(url) {
   return null;
 }
 
+function normalizePoint(lat, lon, name = '') {
+  const point = { lat: Number(lat), lon: Number(lon), name: compactText(name) };
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return null;
+  if (point.lat < 54 || point.lat > 57 || point.lon < 35 || point.lon > 41) return null;
+  return point;
+}
+
+function decodeScriptString(value) {
+  return String(value || '')
+    .replace(/\\u([\da-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\x([\da-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function extractPointFromRaw(raw) {
+  const text = String(raw || '');
+  const patterns = [
+    { regex: /"item"\s*:\s*\{[\s\S]{0,2500}?"coords"\s*:\s*\{\s*"lat"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lat-lon' },
+    { regex: /"item"\s*:\s*\{[\s\S]{0,2500}?"coords"\s*:\s*\{\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lon-lat' },
+    { regex: /"coordinates"\s*:\s*\{\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lat-lon' },
+    { regex: /"coordinates"\s*:\s*\{\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lon-lat' },
+    { regex: /"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lat-lon' },
+    { regex: /"(?:lng|lon|longitude)"\s*:\s*"?([0-9.]+)"?\s*,\s*"(?:lat|latitude)"\s*:\s*"?([0-9.]+)"?/i, order: 'lon-lat' },
+    { regex: /POINT\(\s*([0-9.]+)\s+([0-9.]+)\s*\)/i, order: 'lon-lat' }
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern.regex);
+    if (!match) continue;
+    const point = pattern.order === 'lat-lon'
+      ? normalizePoint(match[1], match[2])
+      : normalizePoint(match[2], match[1]);
+    if (point) return point;
+  }
+  return null;
+}
+
+function extractAddressFromRaw(raw) {
+  const text = String(raw || '');
+  const patterns = [
+    /"(?:fullAddress|formattedAddress|addressLine|displayAddress|geoAddress)"\s*:\s*"([^"]{12,220})"/i,
+    /"address"\s*:\s*"([^"]{12,220})"/i,
+    /"address"\s*:\s*\{[\s\S]{0,600}?"formatted"\s*:\s*"([^"]{12,220})"/i,
+    /"address"\s*:\s*\{[\s\S]{0,600}?"fullAddress"\s*:\s*"([^"]{12,220})"/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    const address = normalizeAddressCandidate(decodeScriptString(match[1]));
+    if (addressScore(address) >= 20) return address;
+  }
+  return '';
+}
+
 function regionHint(text) {
   const normalized = compactText(text).toLowerCase();
   if (!normalized) return '';
@@ -496,6 +550,28 @@ async function fetchJson(url, options = {}, timeoutMs = 12000) {
   }
 }
 
+async function geocodeWithNominatim(query) {
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`;
+  const data = await fetchJson(url, { headers: { 'User-Agent': 'avito-cian-bot/1.0' } }, 10000);
+  const item = Array.isArray(data) ? data[0] : null;
+  if (!item) return null;
+  const point = { lat: Number(item.lat), lon: Number(item.lon), name: item.display_name || '' };
+  return Number.isFinite(point.lat) && Number.isFinite(point.lon) ? point : null;
+}
+
+async function geocodeWithPhoton(query) {
+  const url = `https://photon.komoot.io/api/?limit=1&lang=ru&q=${encodeURIComponent(query)}`;
+  const data = await fetchJson(url, { headers: { 'User-Agent': 'avito-cian-bot/1.0' } }, 10000);
+  const feature = Array.isArray(data?.features) ? data.features[0] : null;
+  const coordinates = Array.isArray(feature?.geometry?.coordinates) ? feature.geometry.coordinates : [];
+  const point = {
+    lon: Number(coordinates[0]),
+    lat: Number(coordinates[1]),
+    name: compactText(feature?.properties?.name || feature?.properties?.street || '')
+  };
+  return Number.isFinite(point.lat) && Number.isFinite(point.lon) ? point : null;
+}
+
 async function geocodeAd(ad) {
   if (Number.isFinite(ad?.coords?.lat) && Number.isFinite(ad?.coords?.lon)) {
     return {
@@ -523,14 +599,16 @@ async function geocodeAd(ad) {
         `${candidate} Россия`
       ].map(compactText).filter(Boolean)));
       for (const query of queries) {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`;
-        const data = await fetchJson(url, { headers: { 'User-Agent': 'avito-cian-bot/1.0' } }, 10000);
-        const item = Array.isArray(data) ? data[0] : null;
-        const point = item ? { lat: Number(item.lat), lon: Number(item.lon), name: item.display_name || '' } : null;
-        if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
+        const providers = [
+          ['geocoder-nominatim', geocodeWithNominatim],
+          ['geocoder-photon', geocodeWithPhoton]
+        ];
+        for (const [source, provider] of providers) {
+          const point = await provider(query).catch(() => null);
+          if (!point) continue;
           cache.geocode[candidate] = point;
           saveGeoCache();
-          return { address: candidate, point, source: 'geocoder' };
+          return { address: candidate, point, source };
         }
         await sleep(1100);
       }
@@ -737,6 +815,7 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);
     const pageTitle = await page.title().catch(() => '');
+    const rawHtml = await page.content().catch(() => '');
     const extra = await page.evaluate(() => {
       const bodyText = document.body?.innerText?.slice(0, 15000) || '';
       const normalizeAddress = (value) => String(value || '').replace(/\s+/g, ' ').replace(/На карте.*$/i, '').trim();
@@ -785,11 +864,15 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
         coords: structured.coords
       };
     }).catch(() => ({ detail: '', address: '', coords: null }));
+    const rawAddress = extractAddressFromRaw(rawHtml);
+    const rawPoint = extractPointFromRaw(rawHtml);
     return {
       ...ad,
       title: ad.title || pageTitle,
-      address: compactText(extra.address || ad.address || ''),
-      coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon) ? extra.coords : ad.coords || null,
+      address: compactText(extra.address || rawAddress || ad.address || ''),
+      coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon)
+        ? extra.coords
+        : rawPoint || ad.coords || null,
       desc: [ad.desc, pageTitle, extra.detail].filter(Boolean).join('\n')
     };
   } catch (_) {
@@ -805,6 +888,7 @@ async function enrichPlaywrightAd(context, ad, siteType) {
   try {
     await page.goto(ad.href, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(1200);
+    const rawHtml = await page.content().catch(() => '');
     const extra = await page.evaluate((currentSiteType) => {
       const bodyText = document.body?.innerText?.slice(0, 15000) || '';
       const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -824,10 +908,11 @@ async function enrichPlaywrightAd(context, ad, siteType) {
         mapHref: mapLink?.href || ''
       };
     }, siteType).catch(() => ({ detail: '', address: '', mapHref: '' }));
-    const coords = pointFromMapUrl(extra.mapHref);
+    const coords = pointFromMapUrl(extra.mapHref) || extractPointFromRaw(rawHtml);
+    const rawAddress = extractAddressFromRaw(rawHtml);
     return {
       ...ad,
-      address: compactText(extra.address || ad.address || ''),
+      address: compactText(extra.address || rawAddress || ad.address || ''),
       coords: coords || ad.coords || null,
       desc: [ad.desc, extra.detail].filter(Boolean).join('\n')
     };
