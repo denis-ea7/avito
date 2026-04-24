@@ -546,6 +546,23 @@ function addressForGeo(ad) {
   return addressCandidates(ad)[0] || '';
 }
 
+function addressFromTextBlock(text) {
+  const raw = String(text || '');
+  const hint = regionHint(raw);
+  const candidates = raw
+    .split(/\n|\||;/)
+    .map(compactText)
+    .filter(Boolean)
+    .map(normalizeAddressCandidate)
+    .filter(Boolean)
+    .filter((value) => !TITLE_LIKE.test(value) && !SEARCH_LIKE.test(value))
+    .map((value) => (hint && !CITY_MARKER.test(value) ? `${value}, ${hint}` : value))
+    .map((value) => value.replace(/,\s*(Москва|Московская область),\s*\1/i, ', $1'))
+    .map((value) => value.replace(/,\s*Россия$/i, ''))
+    .filter(isPreciseAddress);
+  return Array.from(new Set(candidates)).sort((left, right) => addressScore(right) - addressScore(left))[0] || '';
+}
+
 function routeDebugLine(label, geo) {
   const address = compactText(geo?.address || '') || 'нет';
   const point = geo?.point && Number.isFinite(geo.point.lat) && Number.isFinite(geo.point.lon)
@@ -899,10 +916,11 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
       };
     }).catch(() => ({ detail: '', address: '', coords: null }));
     const rawAddress = extractAddressFromRaw(rawHtml);
+    const detailAddress = addressFromTextBlock(extra.detail);
     return {
       ...ad,
       title: ad.title || pageTitle,
-      address: compactText(extra.address || rawAddress || ad.address || ''),
+      address: compactText(extra.address || rawAddress || detailAddress || ad.address || ''),
       coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon) ? extra.coords : ad.coords || null,
       desc: [ad.desc, pageTitle, extra.detail].filter(Boolean).join('\n')
     };
@@ -941,9 +959,10 @@ async function enrichPlaywrightAd(context, ad, siteType) {
     }, siteType).catch(() => ({ detail: '', address: '', mapHref: '' }));
     const coords = pointFromMapUrl(extra.mapHref);
     const rawAddress = extractAddressFromRaw(rawHtml);
+    const detailAddress = addressFromTextBlock(extra.detail);
     return {
       ...ad,
-      address: compactText(extra.address || rawAddress || ad.address || ''),
+      address: compactText(extra.address || rawAddress || detailAddress || ad.address || ''),
       coords: coords || ad.coords || null,
       desc: [ad.desc, extra.detail].filter(Boolean).join('\n')
     };
