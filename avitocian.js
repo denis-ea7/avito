@@ -836,15 +836,26 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
     }
     if (sentIds.has(id)) continue;
     let normalizedAd = { ...ad, propertyType };
+    let wasEnriched = false;
     let decision = filterDecision(normalizedAd, filters);
     if ((decision.detailsUseful || (decision.match && filters.aiEnabled)) && enrichAd && enrichedCount < maxEnriched) {
       enrichedCount += 1;
       normalizedAd = { ...(await enrichAd(ad)), propertyType };
+      wasEnriched = true;
       decision = filterDecision(normalizedAd, filters);
     }
     if (!decision.match) {
       console.log(`Фильтр отклонил: ${label} ${id}${logUrl(normalizedAd.href)}${decision.reason ? ` — ${decision.reason}` : ''}`);
       continue;
+    }
+    if (enrichAd && !wasEnriched && enrichedCount < maxEnriched) {
+      enrichedCount += 1;
+      normalizedAd = { ...(await enrichAd(normalizedAd)), propertyType };
+      decision = filterDecision(normalizedAd, filters);
+      if (!decision.match) {
+        console.log(`Фильтр отклонил после детализации: ${label} ${id}${logUrl(normalizedAd.href)}${decision.reason ? ` — ${decision.reason}` : ''}`);
+        continue;
+      }
     }
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
     sentIds.add(id);
