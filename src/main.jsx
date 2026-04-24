@@ -49,7 +49,9 @@ const defaultConfig = {
   aiModel: 'deepseek-chat',
   deepseekApiKey: '',
   deepseekApiKeySet: false,
-  autostart: true
+  autostart: true,
+  proxyMode: 'off',
+  proxyList: ''
 };
 
 function toRequest(path, options = {}) {
@@ -354,6 +356,33 @@ function App() {
                 />
               </label>
             </div>
+          </fieldset>
+
+          <fieldset className="fieldSet">
+            <legend>Прокси</legend>
+            <div className="grid two aiGrid">
+              <label className="field">
+                <span>Режим прокси</span>
+                <select value={config.proxyMode || 'off'} onChange={(event) => updateConfig('proxyMode', event.target.value)}>
+                  <option value="off">Выключены</option>
+                  <option value="on">Всегда использовать</option>
+                  <option value="alternate">Через раз</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Формат строк</span>
+                <input value="host:port:user:pass или http://user:pass@host:port" readOnly />
+              </label>
+            </div>
+            <label className="field">
+              <span>Список прокси, по одному на строку</span>
+              <textarea
+                className="proxyTextarea"
+                value={config.proxyList || ''}
+                placeholder={'193.8.164.45:63142:LdlgSr3R4:ufKRLJ13y\nhttp://appuser:N7vL2xQp9sH3mK8t@121.127.37.208:3128'}
+                onChange={(event) => updateConfig('proxyList', event.target.value)}
+              />
+            </label>
           </fieldset>
         </form>
 

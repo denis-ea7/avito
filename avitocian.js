@@ -23,7 +23,6 @@ const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, 'filters.jso
 const SKIP_TELEGRAM = process.env.SKIP_TELEGRAM === '1';
 const TELEGRAM_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TG_CHAT_ID || '';
-const PROXY_MODE = process.env.PROXY_MODE || 'off';
 const BASE_USER_DATA_DIR = path.join(__dirname, 'chrome-profile');
 const RUN_INTERVAL_MS_MIN = 50000;
 const RUN_INTERVAL_MS_MAX = 100000;
@@ -41,12 +40,6 @@ const AVITO_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) 
 const OKHOTNY_RYAD = { lat: 55.756762, lon: 37.616434 };
 
 puppeteer.use(stealthPlugin());
-
-const proxyList = (process.env.PROXY_LIST || '')
-  .split(',')
-  .map((url) => url.trim())
-  .filter(Boolean)
-  .map((url) => ({ url }));
 
 let proxyIndex = 0;
 let runCounter = 0;
@@ -133,7 +126,20 @@ function normalizeProxyUrl(rawUrl) {
   return rawUrl;
 }
 
+function currentProxyConfig() {
+  const config = readConfig(CONFIG_FILE);
+  return {
+    mode: config.proxyMode || process.env.PROXY_MODE || 'off',
+    list: String(config.proxyList || process.env.PROXY_LIST || '')
+      .split(/\r?\n|,/)
+      .map((url) => url.trim())
+      .filter(Boolean)
+      .map((url) => ({ url }))
+  };
+}
+
 function getNextProxy() {
+  const proxyList = currentProxyConfig().list;
   if (!proxyList.length) return null;
   const proxy = proxyList[proxyIndex];
   proxyIndex = (proxyIndex + 1) % proxyList.length;
@@ -141,11 +147,12 @@ function getNextProxy() {
 }
 
 function shouldUseProxy(siteType) {
-  if (PROXY_MODE === 'off') return false;
-  if (siteType === 'avito') return false;
+  const { mode, list } = currentProxyConfig();
+  if (mode === 'off' || !list.length) return false;
   if (siteType === 'cian') return true;
   if (siteType === 'yandex' || siteType === 'domclick') return true;
-  return PROXY_MODE === 'on' || (PROXY_MODE === 'alternate' && runCounter % 2 === 1);
+  if (siteType === 'avito') return mode === 'on' || (mode === 'alternate' && runCounter % 2 === 1);
+  return mode === 'on' || (mode === 'alternate' && runCounter % 2 === 1);
 }
 
 function extractListingId(source, url) {

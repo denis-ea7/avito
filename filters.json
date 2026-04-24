@@ -44,5 +44,7 @@
   "aiProvider": "deepseek",
   "aiModel": "deepseek-chat",
   "deepseekApiKey": "",
-  "autostart": true
+  "autostart": true,
+  "proxyMode": "on",
+  "proxyList": "193.8.164.45:63142:LdlgSr3R4:ufKRLJ13y\nhttp://appuser:N7vL2xQp9sH3mK8t@121.127.37.208:3128"
 }
