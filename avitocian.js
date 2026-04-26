@@ -393,6 +393,7 @@ const SEARCH_LIKE = /(снять|сдам|сдается|сдаётся|объя
 
 function normalizeAddressCandidate(value) {
   return compactText(value)
+    .replace(/На карте.*$/i, '')
     .replace(/ул\./gi, 'улица')
     .replace(/пр-кт|просп\./gi, 'проспект')
     .replace(/пр-д/gi, 'проезд')
@@ -559,10 +560,15 @@ function addressForGeo(ad) {
 function addressFromTextBlock(text) {
   const raw = String(text || '');
   const hint = regionHint(raw);
-  const candidates = raw
-    .split(/\n|\||;/)
-    .map(compactText)
-    .filter(Boolean)
+  const lines = raw.split(/\n|\||;/).map(compactText).filter(Boolean);
+  const mapIndex = lines.findIndex((line) => /^(показать )?на карте$/i.test(line));
+  const aroundMap = mapIndex > 0 ? [lines[mapIndex - 1], lines[mapIndex - 2]].filter(Boolean) : [];
+  const directMatches = [];
+  for (const line of lines) {
+    const match = line.match(/((?:Москва|Московская\s+обл\.?|Московская\s+область)[^,\n]{0,80}(?:,\s*[^,\n]{1,80}){1,6})/i);
+    if (match?.[1]) directMatches.push(match[1]);
+  }
+  const candidates = [...aroundMap, ...directMatches, ...lines]
     .map(normalizeAddressCandidate)
     .filter(Boolean)
     .filter((value) => !TITLE_LIKE.test(value) && !SEARCH_LIKE.test(value))
@@ -901,6 +907,9 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     const extra = await page.evaluate(() => {
       const bodyText = document.body?.innerText?.slice(0, 15000) || '';
       const normalizeAddress = (value) => String(value || '').replace(/\s+/g, ' ').replace(/На карте.*$/i, '').trim();
+      const lines = bodyText.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+      const mapIndex = lines.findIndex((line) => /^(показать )?на карте$/i.test(line));
+      const mapAddress = mapIndex > 0 ? normalizeAddress(lines[mapIndex - 1]) : '';
       const readStructured = () => {
         const readFromText = (text) => {
           const itemMatch = text.match(/"item":\{[\s\S]*?"address":"([^"]+)"[\s\S]*?"coords":\{"lat":([0-9.]+),"lng":([0-9.]+)\}/);
@@ -942,7 +951,7 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
         : '';
       return {
         detail: bodyText,
-        address: structured.address || geoAddress,
+        address: structured.address || geoAddress || mapAddress,
         coords: structured.coords
       };
     }).catch(() => ({ detail: '', address: '', coords: null }));
@@ -972,19 +981,19 @@ async function enrichPlaywrightAd(context, ad, siteType) {
     const extra = await page.evaluate((currentSiteType) => {
       const bodyText = document.body?.innerText?.slice(0, 15000) || '';
       const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const lines = bodyText.split('\n').map(compact).filter(Boolean);
+      const mapIndex = lines.findIndex((line) => /^(показать )?на карте$/i.test(line));
       const mapLink = Array.from(document.querySelectorAll('a'))
         .map((link) => ({ text: compact(link.innerText), href: link.href || link.getAttribute('href') || '' }))
         .find((link) => /Яндекс/.test(link.text) && /maps\.yandex|maps\.yandex\.ru|yandex\.ru\/maps/.test(link.href));
-      const lineAddress = bodyText
-        .split('\n')
-        .map(compact)
-        .find((line) => /(ул\.|улица|проспект|проезд|шоссе|переулок|бульвар|набережная|площадь|аллея|тупик|квартал)/i.test(line) && /(москва|московская|химки|люберцы|подольск|мытищи|красногорск|долгопрудный|реутов|одинцово|домодедово|лобня|зеленоград)/i.test(line));
+      const lineAddress = lines.find((line) => /(ул\.|улица|проспект|проезд|шоссе|ш\.|переулок|бульвар|набережная|площадь|аллея|тупик|квартал)/i.test(line) && /(москва|московская|химки|люберцы|подольск|мытищи|красногорск|долгопрудный|реутов|одинцово|домодедово|лобня|зеленоград)/i.test(line));
+      const mapAddress = mapIndex > 0 ? compact(lines[mapIndex - 1]).replace(/На карте.*$/i, '') : '';
       const exactAddress = currentSiteType === 'yandex'
-        ? bodyText.split('\n').map(compact).find((line) => /(москва|московская)/i.test(line) && /(ул\.|улица|проспект|проезд|шоссе|переулок|бульвар|набережная|площадь)/i.test(line))
-        : lineAddress;
+        ? lines.find((line) => /(москва|московская)/i.test(line) && /(ул\.|улица|проспект|проезд|шоссе|ш\.|переулок|бульвар|набережная|площадь)/i.test(line))
+        : lineAddress || mapAddress;
       return {
         detail: bodyText,
-        address: exactAddress || lineAddress || '',
+        address: exactAddress || mapAddress || lineAddress || '',
         mapHref: mapLink?.href || ''
       };
     }, siteType).catch(() => ({ detail: '', address: '', mapHref: '' }));
