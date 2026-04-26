@@ -168,17 +168,23 @@ function extractListingId(source, url) {
   return `${source}_${Buffer.from(url).toString('base64url').slice(0, 48)}`;
 }
 
-async function sendToTelegram(bot, chatId, message) {
+async function sendToTelegram(bot, chatId, payload) {
   try {
     if (SKIP_TELEGRAM) {
-      console.log(`Telegram отключен: ${message}`);
+      console.log(`Telegram отключен: ${typeof payload === 'string' ? payload : payload?.text || ''}`);
       return;
     }
     if (!bot) throw new Error('Telegram bot не инициализирован');
     if (!chatId) throw new Error('TG_CHAT_ID пустой');
+    const text = typeof payload === 'string' ? payload : payload?.text || '';
+    const replyMarkup = typeof payload === 'string' ? undefined : payload?.reply_markup;
     const chatIds = String(chatId).split(',').map((id) => id.trim()).filter(Boolean);
     for (const id of chatIds) {
-      const sent = await bot.sendMessage(id, message, { parse_mode: 'HTML', disable_web_page_preview: false });
+      const sent = await bot.sendMessage(id, text, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: false,
+        reply_markup: replyMarkup
+      });
       console.log(`Telegram доставлено: chat ${String(sent.chat.id).slice(-4)}, message ${sent.message_id}`);
     }
   } catch (e) {
@@ -748,18 +754,28 @@ out center tags;`;
 
 async function formatMessage(label, ad) {
   const geo = await geocodeAd(ad);
-  const routeUrl = geo.point ? twoGisRouteUrl(geo.point) : twoGisSearchUrl(geo.address);
   console.log(routeDebugLine(label, geo));
-  if (routeUrl) console.log(`Маршрут ${label}: 2ГИС ${routeUrl}`);
-  const stations = geo.point ? await nearbyStations(geo.point) : [];
   const lines = [escapeHtml(ad.href)];
-  if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
-  if (geo.point) lines.push(`От Охотного ряда: ${escapeHtml(formatKm(kmBetween(OKHOTNY_RYAD, geo.point)))}`);
-  if (stations.length) {
-    lines.push('Станции:');
-    lines.push(...stations.map((station) => `${escapeHtml(station.type)} ${escapeHtml(station.name)}: ${escapeHtml(formatKm(station.distanceKm))}`));
+  const keyboard = [];
+  if (geo.address) lines.push(`Адрес: ${escapeHtml(geo.address)}`);
+  if (geo.address) {
+    keyboard.push([{
+      text: 'Копировать адрес',
+      copy_text: { text: geo.address.slice(0, 256) }
+    }]);
   }
-  return lines.filter(Boolean).join('\n');
+  if (geo.point) {
+    const coords = `${geo.point.lat.toFixed(6)}, ${geo.point.lon.toFixed(6)}`;
+    lines.push(`Координаты: <code>${escapeHtml(coords)}</code>`);
+    keyboard.push([{
+      text: 'Копировать координаты',
+      copy_text: { text: coords }
+    }]);
+  }
+  return {
+    text: lines.filter(Boolean).join('\n'),
+    reply_markup: keyboard.length ? { inline_keyboard: keyboard } : undefined
+  };
 }
 
 function logUrl(url) {
