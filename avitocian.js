@@ -588,19 +588,15 @@ function routeDebugLine(label, geo) {
   return `Маршрут ${label}: адрес="${address}" координаты=${point} источник=${source}`;
 }
 
-function twoGisRouteUrl(point) {
-  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return '';
-  const from = `${OKHOTNY_RYAD.lon},${OKHOTNY_RYAD.lat}`;
-  const to = `${point.lon},${point.lat}`;
-  const centerLon = ((OKHOTNY_RYAD.lon + point.lon) / 2).toFixed(6);
-  const centerLat = ((OKHOTNY_RYAD.lat + point.lat) / 2).toFixed(6);
-  return `https://2gis.ru/moscow/directions/points/${from}|${to}?m=${centerLon},${centerLat}/12.31`;
-}
-
-function twoGisSearchUrl(address) {
+function yandexRouteUrl(address, point) {
+  const from = `${OKHOTNY_RYAD.lat},${OKHOTNY_RYAD.lon}`;
+  if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
+    const to = `${point.lat},${point.lon}`;
+    return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(to)}&rtt=mt`;
+  }
   const query = compactText(address);
   if (!query) return '';
-  return `https://2gis.ru/search/${encodeURIComponent(query)}`;
+  return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(query)}&rtt=mt`;
 }
 
 function geocodeQueries(address) {
@@ -843,25 +839,15 @@ async function formatMessage(label, ad) {
   }
   console.log(routeDebugLine(label, geo));
   const lines = [escapeHtml(ad.href)];
-  const keyboard = [];
+  const routeUrl = yandexRouteUrl(geo.address, geo.point);
+  if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
   if (geo.address) lines.push(`Адрес: ${escapeHtml(geo.address)}`);
-  if (geo.address) {
-    keyboard.push([{
-      text: 'Копировать адрес',
-      copy_text: { text: geo.address.slice(0, 256) }
-    }]);
-  }
   if (geo.point) {
     const coords = `${geo.point.lat.toFixed(6)}, ${geo.point.lon.toFixed(6)}`;
     lines.push(`Координаты: <code>${escapeHtml(coords)}</code>`);
-    keyboard.push([{
-      text: 'Копировать координаты',
-      copy_text: { text: coords }
-    }]);
   }
   return {
-    text: lines.filter(Boolean).join('\n'),
-    reply_markup: keyboard.length ? { inline_keyboard: keyboard } : undefined
+    text: lines.filter(Boolean).join('\n')
   };
 }
 
