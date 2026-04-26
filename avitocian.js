@@ -603,6 +603,27 @@ function twoGisSearchUrl(address) {
   return `https://2gis.ru/search/${encodeURIComponent(query)}`;
 }
 
+function geocodeQueries(address) {
+  const base = normalizeAddressCandidate(address);
+  const simplified = compactText(base
+    .replace(/,\s*[А-ЯЁ]{2,5}АО\b/gi, '')
+    .replace(/,\s*р-н\s*[^,]+/gi, '')
+    .replace(/,\s*г\.о\.\s*[^,]+/gi, '')
+    .replace(/,\s*пгт\.\s*/gi, ', ')
+    .replace(/,\s*пос[её]лок\s*/gi, ', ')
+    .replace(/,\s*микрорайон\s*/gi, ', ')
+    .replace(/\s+,/g, ',')
+    .replace(/,+/g, ','));
+  return Array.from(new Set([
+    base,
+    simplified,
+    simplified.replace(/,/g, ' '),
+    `${simplified} Россия`,
+    base.replace(/,/g, ' '),
+    `${base} Россия`
+  ].map(compactText).filter(Boolean)));
+}
+
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -638,6 +659,7 @@ async function geocodeWithPhoton(query) {
 }
 
 async function geocodeAd(ad) {
+  const cache = getGeoCache();
   if (Number.isFinite(ad?.coords?.lat) && Number.isFinite(ad?.coords?.lon)) {
     return {
       address: compactText(ad.address || addressForGeo(ad)),
@@ -649,23 +671,45 @@ async function geocodeAd(ad) {
       source: 'listing-coords'
     };
   }
-  const candidates = addressCandidates(ad);
+  const directAddress = normalizeAddressCandidate(ad?.address || '');
+  const directLocation = normalizeAddressCandidate(ad?.location || '');
+  if (directAddress && directAddress !== directLocation) {
+    if (cache.geocode[directAddress]) {
+      return { address: directAddress, point: cache.geocode[directAddress], source: 'cache' };
+    }
+    try {
+      for (const query of geocodeQueries(directAddress)) {
+        for (const [source, provider] of [
+          ['geocoder-nominatim', geocodeWithNominatim],
+          ['geocoder-photon', geocodeWithPhoton]
+        ]) {
+          const point = await provider(query).catch(() => null);
+          if (!point) continue;
+          cache.geocode[directAddress] = point;
+          saveGeoCache();
+          return { address: directAddress, point, source };
+        }
+        await sleep(1100);
+      }
+    } catch (e) {
+      console.error('Геокодинг не сработал:', e.message);
+      return { address: directAddress, point: null, source: 'no-point' };
+    }
+  }
+  const candidates = [
+    ...(directAddress ? [directAddress] : []),
+    ...addressCandidates(ad).filter((candidate) => candidate !== directAddress)
+  ];
   const preciseCandidates = candidates.filter(isPreciseAddress);
-  const address = preciseCandidates[0] || candidates[0] || '';
+  const address = (isPreciseAddress(directAddress) ? directAddress : '') || preciseCandidates[0] || candidates[0] || '';
   if (!address) return { address: '', point: null, source: 'none' };
   if (!preciseCandidates.length) return { address, point: null, source: 'search-only' };
-  const cache = getGeoCache();
   for (const candidate of preciseCandidates) {
     if (cache.geocode[candidate]) return { address: candidate, point: cache.geocode[candidate], source: 'cache' };
   }
   try {
     for (const candidate of preciseCandidates) {
-      const queries = Array.from(new Set([
-        candidate,
-        candidate.replace(/,/g, ' '),
-        `${candidate} Россия`
-      ].map(compactText).filter(Boolean)));
-      for (const query of queries) {
+      for (const query of geocodeQueries(candidate)) {
         const providers = [
           ['geocoder-nominatim', geocodeWithNominatim],
           ['geocoder-photon', geocodeWithPhoton]
@@ -684,6 +728,31 @@ async function geocodeAd(ad) {
     console.error('Геокодинг не сработал:', e.message);
   }
   return { address, point: null, source: 'no-point' };
+}
+
+async function geocodeExactAddress(address) {
+  const normalized = normalizeAddressCandidate(address);
+  if (!normalized) return { address: '', point: null, source: 'none' };
+  const cache = getGeoCache();
+  if (cache.geocode[normalized]) return { address: normalized, point: cache.geocode[normalized], source: 'cache' };
+  try {
+    for (const query of geocodeQueries(normalized)) {
+      for (const [source, provider] of [
+        ['geocoder-nominatim', geocodeWithNominatim],
+        ['geocoder-photon', geocodeWithPhoton]
+      ]) {
+        const point = await provider(query).catch(() => null);
+        if (!point) continue;
+        cache.geocode[normalized] = point;
+        saveGeoCache();
+        return { address: normalized, point, source };
+      }
+      await sleep(1100);
+    }
+  } catch (e) {
+    console.error('Геокодинг не сработал:', e.message);
+  }
+  return { address: normalized, point: null, source: 'no-point' };
 }
 
 function stationType(tags = {}) {
@@ -759,7 +828,19 @@ out center tags;`;
 }
 
 async function formatMessage(label, ad) {
-  const geo = await geocodeAd(ad);
+  let geo = await geocodeAd(ad);
+  const explicitAddress = normalizeAddressCandidate(ad?.address || '');
+  const explicitLocation = normalizeAddressCandidate(ad?.location || '');
+  if (explicitAddress && explicitAddress !== explicitLocation) {
+    const explicitGeo = await geocodeExactAddress(explicitAddress);
+    if (explicitGeo.address) {
+      geo = {
+        address: explicitGeo.address,
+        point: explicitGeo.point || geo.point,
+        source: explicitGeo.point ? explicitGeo.source : geo.source
+      };
+    }
+  }
   console.log(routeDebugLine(label, geo));
   const lines = [escapeHtml(ad.href)];
   const keyboard = [];
@@ -904,7 +985,7 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     await page.waitForTimeout(1200);
     const pageTitle = await page.title().catch(() => '');
     const rawHtml = await page.content().catch(() => '');
-    const extra = await page.evaluate(() => {
+    const extra = await page.evaluate((currentSiteType) => {
       const bodyText = document.body?.innerText?.slice(0, 15000) || '';
       const normalizeAddress = (value) => String(value || '').replace(/\s+/g, ' ').replace(/На карте.*$/i, '').trim();
       const lines = bodyText.split(/\n+/).map((line) => line.trim()).filter(Boolean);
@@ -946,7 +1027,7 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
         return { address: '', coords: null };
       };
       const structured = readStructured();
-      const geoAddress = siteType === 'cian'
+      const geoAddress = currentSiteType === 'cian'
         ? normalizeAddress(document.querySelector('[data-name="Geo"]')?.innerText || '')
         : '';
       return {
@@ -954,7 +1035,7 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
         address: structured.address || geoAddress || mapAddress,
         coords: structured.coords
       };
-    }).catch(() => ({ detail: '', address: '', coords: null }));
+    }, siteType).catch(() => ({ detail: '', address: '', coords: null }));
     const rawAddress = extractAddressFromRaw(rawHtml);
     const detailAddress = addressFromTextBlock(extra.detail);
     return {
@@ -1231,7 +1312,17 @@ process.on('SIGTERM', () => {
   setTimeout(() => process.exit(0), 300);
 });
 
-main().catch((err) => {
-  console.error('FATAL:', err.message);
-  process.exit(1);
-});
+module.exports = {
+  launchPuppeteer,
+  closePuppeteer,
+  enrichPuppeteerAd,
+  formatMessage,
+  geocodeAd
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('FATAL:', err.message);
+    process.exit(1);
+  });
+}
