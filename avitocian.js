@@ -592,7 +592,9 @@ function yandexRouteUrl(address, point) {
   const from = `${OKHOTNY_RYAD.lat},${OKHOTNY_RYAD.lon}`;
   if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) {
     const to = `${point.lat},${point.lon}`;
-    return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(to)}&rtt=mt`;
+    const midLon = ((OKHOTNY_RYAD.lon + point.lon) / 2).toFixed(6);
+    const midLat = ((OKHOTNY_RYAD.lat + point.lat) / 2).toFixed(6);
+    return `https://yandex.ru/maps/?ll=${encodeURIComponent(`${midLon},${midLat}`)}&mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(to)}&rtt=mt&z=11.38`;
   }
   const query = compactText(address);
   if (!query) return '';
