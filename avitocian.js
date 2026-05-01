@@ -32,6 +32,7 @@ const GOTO_TIMEOUT_MS = 60000;
 const POST_GOTO_PAUSE_MS_MIN = 4000;
 const POST_GOTO_PAUSE_MS_MAX = 9000;
 const RETRIES_ON_BLOCK = 2;
+const ROUTE_CACHE_TTL_MS = 30 * 60 * 1000;
 const WORK_HOURS = {
   from: Number(process.env.WORK_HOUR_FROM || 8),
   to: Number(process.env.WORK_HOUR_TO || 23)
@@ -72,14 +73,15 @@ function saveLatestId(latestIds, key, id) {
 
 function loadGeoCache() {
   try {
-    if (!fs.existsSync(GEO_CACHE_FILE)) return { geocode: {}, stations: {} };
+    if (!fs.existsSync(GEO_CACHE_FILE)) return { geocode: {}, stations: {}, routes: {} };
     const data = JSON.parse(fs.readFileSync(GEO_CACHE_FILE, 'utf8'));
     return {
       geocode: data?.geocode && typeof data.geocode === 'object' ? data.geocode : {},
-      stations: data?.stations && typeof data.stations === 'object' ? data.stations : {}
+      stations: data?.stations && typeof data.stations === 'object' ? data.stations : {},
+      routes: data?.routes && typeof data.routes === 'object' ? data.routes : {}
     };
   } catch (_) {
-    return { geocode: {}, stations: {} };
+    return { geocode: {}, stations: {}, routes: {} };
   }
 }
 
@@ -264,7 +266,7 @@ async function safeGoto(page, url, readySelector) {
   return false;
 }
 
-async function launchPuppeteer(siteType) {
+async function launchPuppeteer(siteType, options = {}) {
   const profileDir = process.env.PERSISTENT_CHROME_PROFILE === '1'
     ? BASE_USER_DATA_DIR
     : fs.mkdtempSync(path.join(os.tmpdir(), `avito-${siteType}-${process.pid}-`));
@@ -278,7 +280,7 @@ async function launchPuppeteer(siteType) {
     '--no-default-browser-check',
     '--disable-default-apps'
   ];
-  if (shouldUseProxy(siteType)) {
+  if (!options.disableProxy && shouldUseProxy(siteType)) {
     const proxy = getNextProxy();
     if (proxy) {
       try {
@@ -488,6 +490,26 @@ function isPreciseAddress(value) {
   return /\b\d{1,4}[а-яё]?(?:\/\d+)?\b/i.test(text) || /(улица|проспект|шоссе|переулок|проезд|бульвар|набережная|площадь|дом|корпус|строение|микрорайон|квартал)/i.test(text);
 }
 
+function hasCoords(value) {
+  return Boolean(value && Number.isFinite(value.lat) && Number.isFinite(value.lon));
+}
+
+function mergeDetailedAd(primary, fallback) {
+  const primaryPrecise = isPreciseAddress(primary?.address || '');
+  const fallbackPrecise = isPreciseAddress(fallback?.address || '');
+  const primaryCoords = hasCoords(primary?.coords);
+  const fallbackCoords = hasCoords(fallback?.coords);
+  if (!fallbackPrecise && !fallbackCoords) return primary;
+  return {
+    ...primary,
+    ...fallback,
+    title: fallback?.title || primary?.title || '',
+    address: fallbackPrecise ? fallback.address : primary?.address || fallback?.address || '',
+    coords: fallbackCoords ? fallback.coords : primary?.coords || fallback?.coords || null,
+    desc: (fallback?.desc || '').length >= (primary?.desc || '').length ? fallback.desc : primary?.desc
+  };
+}
+
 function hrefAddressFallback(href) {
   try {
     const parsed = new URL(href);
@@ -599,6 +621,38 @@ function yandexRouteUrl(address, point) {
   const query = compactText(address);
   if (!query) return '';
   return `https://yandex.ru/maps/?mode=routes&rtext=${encodeURIComponent(from)}~${encodeURIComponent(query)}&rtt=mt`;
+}
+
+function routeCacheKey(point, address) {
+  if (point && Number.isFinite(point.lat) && Number.isFinite(point.lon)) return `point:${point.lat.toFixed(5)},${point.lon.toFixed(5)}`;
+  return `address:${normalizeAddressCandidate(address || '')}`;
+}
+
+function parseDurationMinutes(text) {
+  const normalized = compactText(text).replace(/\u00a0/g, ' ');
+  const match = normalized.match(/(?:(\d+)\s*ч)?\s*(\d+)\s*мин/i);
+  if (!match) return null;
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const total = hours * 60 + minutes;
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+function extractTransitMinutesFromText(text) {
+  const lines = String(text || '').split('\n').map(compactText).filter(Boolean);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^Отправление\b/i.test(lines[index])) {
+      for (let offset = 1; offset <= 3; offset += 1) {
+        const minutes = parseDurationMinutes(lines[index + offset] || '');
+        if (minutes !== null) return minutes;
+      }
+    }
+  }
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const minutes = parseDurationMinutes(lines[index]);
+    if (minutes !== null && /^Прибытие\b/i.test(lines[index + 1] || '')) return minutes;
+  }
+  return lines.map(parseDurationMinutes).find((value) => value !== null) ?? null;
 }
 
 function geocodeQueries(address) {
@@ -753,6 +807,42 @@ async function geocodeExactAddress(address) {
   return { address: normalized, point: null, source: 'no-point' };
 }
 
+async function transitFromCenter(geo) {
+  if (!hasCoords(geo?.point) && !isPreciseAddress(geo?.address || '')) return { minutes: null, source: 'address-too-broad' };
+  const cache = getGeoCache();
+  const key = routeCacheKey(geo?.point, geo?.address);
+  const cached = cache.routes[key];
+  if (cached && cached.fetchedAt && Date.now() - cached.fetchedAt < ROUTE_CACHE_TTL_MS) return cached;
+  if (!playwright) return { minutes: null, source: 'playwright-missing' };
+  const routeUrl = yandexRouteUrl(geo?.address || '', geo?.point || null);
+  if (!routeUrl) return { minutes: null, source: 'route-url-missing' };
+  let browser = null;
+  let context = null;
+  try {
+    ({ browser, context } = await launchPlaywright('yandex'));
+    const page = await context.newPage();
+    await page.goto(routeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(7000);
+    const text = await page.evaluate(() => document.body?.innerText?.slice(0, 20000) || '');
+    await page.close().catch(() => {});
+    const minutes = extractTransitMinutesFromText(text);
+    const result = {
+      minutes,
+      source: minutes === null ? 'route-parse-failed' : 'yandex-route',
+      fetchedAt: Date.now()
+    };
+    cache.routes[key] = result;
+    saveGeoCache();
+    return result;
+  } catch (e) {
+    console.error('Маршрут по транспорту не определился:', e.message);
+    return { minutes: null, source: 'route-fetch-failed' };
+  } finally {
+    await context?.close().catch(() => {});
+    await browser?.close().catch(() => {});
+  }
+}
+
 function stationType(tags = {}) {
   const text = [tags.network, tags.operator, tags.line, tags.route, tags.ref, tags.name].filter(Boolean).join(' ');
   if (/мцд|mcd|d[1-6]|д[1-6]/i.test(text)) return 'МЦД';
@@ -825,7 +915,7 @@ out center tags;`;
   }
 }
 
-async function formatMessage(label, ad) {
+async function resolvePreferredGeo(ad) {
   let geo = await geocodeAd(ad);
   const explicitAddress = normalizeAddressCandidate(ad?.address || '');
   const explicitLocation = normalizeAddressCandidate(ad?.location || '');
@@ -839,11 +929,25 @@ async function formatMessage(label, ad) {
       };
     }
   }
+  return geo;
+}
+
+async function formatMessage(label, ad) {
+  const geo = await resolvePreferredGeo(ad);
   console.log(routeDebugLine(label, geo));
   const lines = [escapeHtml(ad.href)];
   const routeUrl = yandexRouteUrl(geo.address, geo.point);
   if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
   if (geo.address) lines.push(`Адрес: ${escapeHtml(geo.address)}`);
+  let transitMinutes = Number.isFinite(ad?.centerTransitMinutes) ? ad.centerTransitMinutes : null;
+  if (transitMinutes === null) {
+    const transit = await transitFromCenter(geo);
+    if (Number.isFinite(transit.minutes)) {
+      transitMinutes = transit.minutes;
+      ad.centerTransitMinutes = transit.minutes;
+    }
+  }
+  if (transitMinutes !== null) lines.push(`От Охотного ряда на транспорте: ${escapeHtml(String(transitMinutes))} мин`);
   if (geo.point) {
     const coords = `${geo.point.lat.toFixed(6)}, ${geo.point.lon.toFixed(6)}`;
     lines.push(`Координаты: <code>${escapeHtml(coords)}</code>`);
@@ -851,6 +955,24 @@ async function formatMessage(label, ad) {
   return {
     text: lines.filter(Boolean).join('\n')
   };
+}
+
+async function matchesCenterTransitFilter(label, ad, filters) {
+  if (filters.centerTransitMinutesMax === '' || filters.centerTransitMinutesMax === null || filters.centerTransitMinutesMax === undefined) {
+    return { match: true, minutes: null, reason: '' };
+  }
+  const geo = await resolvePreferredGeo(ad);
+  const transit = await transitFromCenter(geo);
+  const minutes = Number.isFinite(transit.minutes) ? transit.minutes : null;
+  if (minutes === null) {
+    return { match: false, minutes: null, reason: 'не удалось определить время от Охотного ряда' };
+  }
+  console.log(`Транспорт ${label}: ${minutes} мин, источник=${transit.source}`);
+  ad.centerTransitMinutes = minutes;
+  if (minutes > filters.centerTransitMinutesMax) {
+    return { match: false, minutes, reason: `${minutes} мин от Охотного ряда на транспорте` };
+  }
+  return { match: true, minutes, reason: '' };
 }
 
 function logUrl(url) {
@@ -952,6 +1074,11 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
         continue;
       }
     }
+    const transitDecision = await matchesCenterTransitFilter(label, normalizedAd, filters);
+    if (!transitDecision.match) {
+      console.log(`Фильтр отклонил по времени в пути: ${label} ${id}${logUrl(normalizedAd.href)}${transitDecision.reason ? ` — ${transitDecision.reason}` : ''}`);
+      continue;
+    }
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
     sentIds.add(id);
     saveSentId(id);
@@ -964,7 +1091,7 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
   return false;
 }
 
-async function enrichPuppeteerAd(browser, ad, siteType) {
+async function enrichPuppeteerAd(browser, ad, siteType, options = {}) {
   if (!ad.href) return ad;
   const page = await browser.newPage();
   try {
@@ -1026,14 +1153,41 @@ async function enrichPuppeteerAd(browser, ad, siteType) {
     }, siteType).catch(() => ({ detail: '', address: '', coords: null }));
     const rawAddress = extractAddressFromRaw(rawHtml);
     const detailAddress = addressFromTextBlock(extra.detail);
-    return {
+    const result = {
       ...ad,
       title: ad.title || pageTitle,
       address: compactText(extra.address || rawAddress || detailAddress || ad.address || ''),
       coords: extra.coords && Number.isFinite(extra.coords.lat) && Number.isFinite(extra.coords.lon) ? extra.coords : ad.coords || null,
       desc: [ad.desc, pageTitle, extra.detail].filter(Boolean).join('\n')
     };
+    const shouldRetryWithoutProxy = siteType === 'avito'
+      && !options.skipNoProxyRetry
+      && shouldUseProxy(siteType)
+      && !isPreciseAddress(result.address)
+      && !hasCoords(result.coords);
+    if (!shouldRetryWithoutProxy) return result;
+    const fallback = await (async () => {
+      const { browser: fallbackBrowser, profileDir } = await launchPuppeteer(siteType, { disableProxy: true });
+      try {
+        return await enrichPuppeteerAd(fallbackBrowser, ad, siteType, { skipNoProxyRetry: true });
+      } finally {
+        await closePuppeteer(fallbackBrowser, profileDir);
+      }
+    })().catch(() => null);
+    return fallback ? mergeDetailedAd(result, fallback) : result;
   } catch (_) {
+    const shouldRetryWithoutProxy = siteType === 'avito' && !options.skipNoProxyRetry && shouldUseProxy(siteType);
+    if (shouldRetryWithoutProxy) {
+      const fallback = await (async () => {
+        const { browser: fallbackBrowser, profileDir } = await launchPuppeteer(siteType, { disableProxy: true });
+        try {
+          return await enrichPuppeteerAd(fallbackBrowser, ad, siteType, { skipNoProxyRetry: true });
+        } finally {
+          await closePuppeteer(fallbackBrowser, profileDir);
+        }
+      })().catch(() => null);
+      if (fallback) return mergeDetailedAd(ad, fallback);
+    }
     return ad;
   } finally {
     await page.close().catch(() => {});
@@ -1305,7 +1459,9 @@ module.exports = {
   closePuppeteer,
   enrichPuppeteerAd,
   formatMessage,
-  geocodeAd
+  geocodeAd,
+  resolvePreferredGeo,
+  transitFromCenter
 };
 
 if (require.main === module) {

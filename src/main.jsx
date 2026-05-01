@@ -34,6 +34,7 @@ const defaultConfig = {
   metroMinutesMin: '',
   metroMinutesMax: 30,
   metroMode: 'any',
+  centerTransitMinutesMax: '',
   buildYearMin: 1995,
   buildYearMax: '',
   floorMin: '',
@@ -317,6 +318,10 @@ function App() {
                 <option value="transport">На транспорте</option>
               </select>
             </label>
+          </div>
+
+          <div className="grid two">
+            <NumberInput label="От Охотного ряда на транспорте до, мин" value={config.centerTransitMinutesMax} onChange={(value) => updateConfig('centerTransitMinutesMax', value)} />
           </div>
 
           <div className="grid four">
