@@ -35,6 +35,7 @@ const defaultConfig = {
   metroMinutesMax: 30,
   metroMode: 'any',
   centerTransitMinutesMax: '',
+  mkadDistanceMax: '',
   buildYearMin: 1995,
   buildYearMax: '',
   floorMin: '',
@@ -322,6 +323,7 @@ function App() {
 
           <div className="grid two">
             <NumberInput label="От Охотного ряда на транспорте до, мин" value={config.centerTransitMinutesMax} onChange={(value) => updateConfig('centerTransitMinutesMax', value)} />
+            <NumberInput label="От МКАД до, км" value={config.mkadDistanceMax} onChange={(value) => updateConfig('mkadDistanceMax', value)} />
           </div>
 
           <div className="grid four">

@@ -33,6 +33,7 @@ const POST_GOTO_PAUSE_MS_MIN = 4000;
 const POST_GOTO_PAUSE_MS_MAX = 9000;
 const RETRIES_ON_BLOCK = 2;
 const ROUTE_CACHE_TTL_MS = 30 * 60 * 1000;
+const MKAD_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const WORK_HOURS = {
   from: Number(process.env.WORK_HOUR_FROM || 8),
   to: Number(process.env.WORK_HOUR_TO || 23)
@@ -73,15 +74,16 @@ function saveLatestId(latestIds, key, id) {
 
 function loadGeoCache() {
   try {
-    if (!fs.existsSync(GEO_CACHE_FILE)) return { geocode: {}, stations: {}, routes: {} };
+    if (!fs.existsSync(GEO_CACHE_FILE)) return { geocode: {}, stations: {}, routes: {}, mkad: null };
     const data = JSON.parse(fs.readFileSync(GEO_CACHE_FILE, 'utf8'));
     return {
       geocode: data?.geocode && typeof data.geocode === 'object' ? data.geocode : {},
       stations: data?.stations && typeof data.stations === 'object' ? data.stations : {},
-      routes: data?.routes && typeof data.routes === 'object' ? data.routes : {}
+      routes: data?.routes && typeof data.routes === 'object' ? data.routes : {},
+      mkad: data?.mkad && Array.isArray(data.mkad.points) ? data.mkad : null
     };
   } catch (_) {
-    return { geocode: {}, stations: {}, routes: {} };
+    return { geocode: {}, stations: {}, routes: {}, mkad: null };
   }
 }
 
@@ -494,6 +496,69 @@ function hasCoords(value) {
   return Boolean(value && Number.isFinite(value.lat) && Number.isFinite(value.lon));
 }
 
+function projectToPlane(point, baseLat) {
+  const radius = 6371;
+  const lat = point.lat * Math.PI / 180;
+  const lon = point.lon * Math.PI / 180;
+  const lat0 = baseLat * Math.PI / 180;
+  return {
+    x: radius * lon * Math.cos(lat0),
+    y: radius * lat
+  };
+}
+
+function distancePointToSegmentKm(point, left, right, baseLat) {
+  const a = projectToPlane(left, baseLat);
+  const b = projectToPlane(right, baseLat);
+  const p = projectToPlane(point, baseLat);
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const lengthSq = abx ** 2 + aby ** 2;
+  if (lengthSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lengthSq));
+  const closestX = a.x + abx * t;
+  const closestY = a.y + aby * t;
+  return Math.hypot(p.x - closestX, p.y - closestY);
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i].lon;
+    const yi = polygon[i].lat;
+    const xj = polygon[j].lon;
+    const yj = polygon[j].lat;
+    const intersect = ((yi > point.lat) !== (yj > point.lat))
+      && (point.lon < ((xj - xi) * (point.lat - yi)) / ((yj - yi) || Number.EPSILON) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function normalizeRingPoints(points) {
+  const unique = [];
+  const seen = new Set();
+  for (const point of points) {
+    if (!hasCoords(point)) continue;
+    const key = `${point.lat.toFixed(6)},${point.lon.toFixed(6)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({ lat: Number(point.lat), lon: Number(point.lon) });
+  }
+  if (unique.length < 3) return [];
+  const center = unique.reduce((acc, point) => ({
+    lat: acc.lat + point.lat,
+    lon: acc.lon + point.lon
+  }), { lat: 0, lon: 0 });
+  center.lat /= unique.length;
+  center.lon /= unique.length;
+  return unique.sort((left, right) => {
+    const leftAngle = Math.atan2(left.lat - center.lat, left.lon - center.lon);
+    const rightAngle = Math.atan2(right.lat - center.lat, right.lon - center.lon);
+    return leftAngle - rightAngle;
+  });
+}
+
 function mergeDetailedAd(primary, fallback) {
   const primaryPrecise = isPreciseAddress(primary?.address || '');
   const fallbackPrecise = isPreciseAddress(fallback?.address || '');
@@ -843,6 +908,62 @@ async function transitFromCenter(geo) {
   }
 }
 
+async function loadMkadRing() {
+  const cache = getGeoCache();
+  if (cache.mkad?.points?.length > 100 && cache.mkad?.fetchedAt && Date.now() - cache.mkad.fetchedAt < MKAD_CACHE_TTL_MS) {
+    return cache.mkad.points;
+  }
+  const body = `[out:json][timeout:25];
+way["name"~"^МКАД, .+километр$"](55.45,37.20,55.98,38.10);
+out geom;`;
+  try {
+    let data = null;
+    let lastError = null;
+    for (const endpoint of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+      try {
+        data = await fetchJson(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            Accept: 'application/json',
+            'User-Agent': 'avito-cian-bot/1.0'
+          },
+          body: new URLSearchParams({ data: body })
+        }, 20000);
+        break;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (!data) throw lastError || new Error('empty response');
+    const points = normalizeRingPoints((data.elements || []).flatMap((item) => Array.isArray(item.geometry) ? item.geometry : []));
+    if (points.length < 100) throw new Error(`not enough mkad points: ${points.length}`);
+    cache.mkad = { points, fetchedAt: Date.now() };
+    saveGeoCache();
+    return points;
+  } catch (e) {
+    console.error('Контур МКАД не загрузился:', e.message);
+    return cache.mkad?.points || [];
+  }
+}
+
+async function distanceFromMkad(geo) {
+  if (!hasCoords(geo?.point) && !isPreciseAddress(geo?.address || '')) return { distanceKm: null, source: 'address-too-broad' };
+  if (!hasCoords(geo?.point)) return { distanceKm: null, source: 'point-missing' };
+  const ring = await loadMkadRing();
+  if (ring.length < 3) return { distanceKm: null, source: 'mkad-ring-missing' };
+  if (pointInPolygon(geo.point, ring)) return { distanceKm: 0, source: 'mkad-inside' };
+  const baseLat = ring.reduce((sum, point) => sum + point.lat, 0) / ring.length;
+  let minDistance = Infinity;
+  for (let index = 0; index < ring.length; index += 1) {
+    const left = ring[index];
+    const right = ring[(index + 1) % ring.length];
+    const distance = distancePointToSegmentKm(geo.point, left, right, baseLat);
+    if (distance < minDistance) minDistance = distance;
+  }
+  return { distanceKm: Number.isFinite(minDistance) ? minDistance : null, source: 'mkad-ring' };
+}
+
 function stationType(tags = {}) {
   const text = [tags.network, tags.operator, tags.line, tags.route, tags.ref, tags.name].filter(Boolean).join(' ');
   if (/мцд|mcd|d[1-6]|д[1-6]/i.test(text)) return 'МЦД';
@@ -948,6 +1069,7 @@ async function formatMessage(label, ad) {
     }
   }
   if (transitMinutes !== null) lines.push(`От Охотного ряда на транспорте: ${escapeHtml(String(transitMinutes))} мин`);
+  if (Number.isFinite(ad?.mkadDistanceKm)) lines.push(`От МКАД: ${escapeHtml(formatKm(ad.mkadDistanceKm))}`);
   if (geo.point) {
     const coords = `${geo.point.lat.toFixed(6)}, ${geo.point.lon.toFixed(6)}`;
     lines.push(`Координаты: <code>${escapeHtml(coords)}</code>`);
@@ -973,6 +1095,24 @@ async function matchesCenterTransitFilter(label, ad, filters) {
     return { match: false, minutes, reason: `${minutes} мин от Охотного ряда на транспорте` };
   }
   return { match: true, minutes, reason: '' };
+}
+
+async function matchesMkadFilter(label, ad, filters) {
+  if (filters.mkadDistanceMax === '' || filters.mkadDistanceMax === null || filters.mkadDistanceMax === undefined) {
+    return { match: true, distanceKm: null, reason: '' };
+  }
+  const geo = await resolvePreferredGeo(ad);
+  const mkad = await distanceFromMkad(geo);
+  const distanceKm = Number.isFinite(mkad.distanceKm) ? mkad.distanceKm : null;
+  if (distanceKm === null) {
+    return { match: false, distanceKm: null, reason: 'не удалось определить расстояние от МКАД' };
+  }
+  ad.mkadDistanceKm = distanceKm;
+  console.log(`МКАД ${label}: ${formatKm(distanceKm)}, источник=${mkad.source}`);
+  if (distanceKm > filters.mkadDistanceMax) {
+    return { match: false, distanceKm, reason: `${formatKm(distanceKm)} от МКАД` };
+  }
+  return { match: true, distanceKm, reason: '' };
 }
 
 function logUrl(url) {
@@ -1077,6 +1217,11 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
     const transitDecision = await matchesCenterTransitFilter(label, normalizedAd, filters);
     if (!transitDecision.match) {
       console.log(`Фильтр отклонил по времени в пути: ${label} ${id}${logUrl(normalizedAd.href)}${transitDecision.reason ? ` — ${transitDecision.reason}` : ''}`);
+      continue;
+    }
+    const mkadDecision = await matchesMkadFilter(label, normalizedAd, filters);
+    if (!mkadDecision.match) {
+      console.log(`Фильтр отклонил по МКАД: ${label} ${id}${logUrl(normalizedAd.href)}${mkadDecision.reason ? ` — ${mkadDecision.reason}` : ''}`);
       continue;
     }
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
@@ -1461,7 +1606,8 @@ module.exports = {
   formatMessage,
   geocodeAd,
   resolvePreferredGeo,
-  transitFromCenter
+  transitFromCenter,
+  distanceFromMkad
 };
 
 if (require.main === module) {
