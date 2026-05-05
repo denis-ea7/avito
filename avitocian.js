@@ -1507,21 +1507,55 @@ async function parseDomclick(context, page, target, filters, sentIds, latestIds,
   await page.goto('https://domclick.ru/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
   await page.waitForTimeout(1000);
   await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 45000, referer: 'https://domclick.ru/' });
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(4000);
+  const probe = await page.evaluate(() => ({
+    title: document.title || '',
+    body: (document.body?.innerText || '').slice(0, 2000),
+    cards: document.querySelectorAll('article a[href*="/card/"], a[href*="/card/"]').length
+  })).catch(() => ({ title: '', body: '', cards: 0 }));
+  if (/403|qrator/i.test(probe.title) || /qrator|доступ ограничен|403/i.test(probe.body) || probe.cards === 0) {
+    console.log(`ДомКлик заблокировал выдачу: ${target.label}`);
+    return false;
+  }
   let ads = await page.evaluate(() => {
-    const anchors = Array.from(document.querySelectorAll('a[href*="/card/"]')).slice(0, 15);
-    return anchors.map((anchor) => {
-      const card = anchor.closest('article, li, div') || anchor;
-      const text = card.innerText || anchor.innerText || '';
-      const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-      return {
-        href: anchor.href.split('?')[0],
-        title: anchor.getAttribute('aria-label') || lines[0] || '',
-        price: lines.find((line) => /₽|руб/i.test(line)) || '',
-        location: lines.find((line) => /метро|москва|область|ул\.|улица/i.test(line)) || '',
-        desc: text
-      };
-    });
+    const seen = new Set();
+    const cards = Array.from(document.querySelectorAll('article'))
+      .map((article) => {
+        const anchor = article.querySelector('a[href*="/card/"]');
+        if (!anchor?.href) return null;
+        const href = anchor.href.split('?')[0];
+        if (!href || seen.has(href)) return null;
+        seen.add(href);
+        const text = article.innerText || anchor.innerText || '';
+        const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+        return {
+          href,
+          title: anchor.getAttribute('aria-label') || lines[0] || '',
+          price: lines.find((line) => /₽|руб/i.test(line)) || '',
+          location: lines.find((line) => /метро|москва|область|ул\.|улица/i.test(line)) || '',
+          desc: text
+        };
+      })
+      .filter(Boolean);
+    if (cards.length) return cards.slice(0, 15);
+    return Array.from(document.querySelectorAll('a[href*="/card/"]'))
+      .map((anchor) => {
+        const href = anchor.href.split('?')[0];
+        if (!href || seen.has(href)) return null;
+        seen.add(href);
+        const card = anchor.closest('article, li, div') || anchor;
+        const text = card.innerText || anchor.innerText || '';
+        const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+        return {
+          href,
+          title: anchor.getAttribute('aria-label') || lines[0] || '',
+          price: lines.find((line) => /₽|руб/i.test(line)) || '',
+          location: lines.find((line) => /метро|москва|область|ул\.|улица/i.test(line)) || '',
+          desc: text
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 15);
   }).catch(() => []);
   return emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, (ad) => enrichPlaywrightAd(context, ad, 'domclick'));
 }
