@@ -7,7 +7,17 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { readConfig, buildSearchTargets, filterDecision } = require('./lib/filters');
+const {
+  readConfig,
+  buildSearchTargets,
+  filterDecision,
+  extractPrice,
+  extractBuildYear,
+  extractMetro,
+  extractAreas,
+  extractSellerType,
+  extractDeposit
+} = require('./lib/filters');
 
 let playwright = null;
 try {
@@ -1053,13 +1063,140 @@ async function resolvePreferredGeo(ad) {
   return geo;
 }
 
+function formatRubles(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? `${Math.round(number).toLocaleString('ru-RU')} ₽` : '';
+}
+
+function formatPricePerSquare(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? `${Math.round(number).toLocaleString('ru-RU')} ₽/м²` : '';
+}
+
+function collectAdText(ad) {
+  return compactText([ad?.title, ad?.price, ad?.location, ad?.desc].filter(Boolean).join(' '));
+}
+
+function usefulArea(ad, areas) {
+  if (ad?.propertyType === 'room') return areas.roomArea || areas.totalArea || null;
+  return areas.totalArea || null;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function buildListingAssessment(ad, transitMinutes) {
+  const text = collectAdText(ad);
+  const price = extractPrice(`${ad?.price || ''} ${text}`);
+  const areas = extractAreas(text);
+  const area = usefulArea(ad, areas);
+  const buildYear = extractBuildYear(text);
+  const metro = extractMetro(text);
+  const sellerType = extractSellerType(text);
+  const deposit = extractDeposit(text);
+  const pricePerSquare = Number.isFinite(price) && Number.isFinite(area) && area > 0 ? price / area : null;
+  const metrics = [];
+  let score = 50;
+  const track = (delta, textValue) => {
+    score += delta;
+    if (textValue) metrics.push({ text: textValue, weight: Math.abs(delta) });
+  };
+  if (Number.isFinite(pricePerSquare)) {
+    const value = Math.round(pricePerSquare);
+    if (ad?.propertyType === 'room') {
+      if (value <= 1100) track(16, formatPricePerSquare(value));
+      else if (value <= 1500) track(11, formatPricePerSquare(value));
+      else if (value <= 1900) track(5, formatPricePerSquare(value));
+      else if (value <= 2300) track(0, formatPricePerSquare(value));
+      else if (value <= 2800) track(-7, formatPricePerSquare(value));
+      else track(-14, formatPricePerSquare(value));
+    } else {
+      if (value <= 900) track(16, formatPricePerSquare(value));
+      else if (value <= 1150) track(10, formatPricePerSquare(value));
+      else if (value <= 1400) track(4, formatPricePerSquare(value));
+      else if (value <= 1700) track(0, formatPricePerSquare(value));
+      else if (value <= 2000) track(-7, formatPricePerSquare(value));
+      else track(-14, formatPricePerSquare(value));
+    }
+  }
+  if (Number.isFinite(area)) {
+    const areaLabel = ad?.propertyType === 'room' ? `${String(area).replace('.', ',')} м² комната` : `${String(area).replace('.', ',')} м²`;
+    if (ad?.propertyType === 'room') {
+      if (area >= 18) track(6, areaLabel);
+      else if (area >= 14) track(3, areaLabel);
+      else if (area < 9) track(-8, areaLabel);
+      else if (area < 12) track(-4, areaLabel);
+    } else {
+      if (area >= 55) track(8, areaLabel);
+      else if (area >= 42) track(5, areaLabel);
+      else if (area >= 32) track(2, areaLabel);
+      else if (area < 25) track(-10, areaLabel);
+      else if (area < 30) track(-5, areaLabel);
+    }
+  }
+  if (Number.isFinite(buildYear)) {
+    const yearLabel = `дом ${buildYear} г.`;
+    if (buildYear >= 2020) track(6, yearLabel);
+    else if (buildYear >= 2010) track(4, yearLabel);
+    else if (buildYear >= 2000) track(2, yearLabel);
+    else if (buildYear < 1980) track(-6, yearLabel);
+    else if (buildYear < 1995) track(-3, yearLabel);
+  }
+  if (Number.isFinite(transitMinutes)) {
+    const transitLabel = `до центра ${transitMinutes} мин`;
+    if (transitMinutes <= 40) track(10, transitLabel);
+    else if (transitMinutes <= 55) track(6, transitLabel);
+    else if (transitMinutes <= 70) track(2, transitLabel);
+    else if (transitMinutes <= 90) track(-2, transitLabel);
+    else track(-8, transitLabel);
+  }
+  if (metro?.minutes !== null && metro?.minutes !== undefined) {
+    const modeLabel = metro.mode === 'transport' ? 'на транспорте' : 'пешком';
+    const metroLabel = `метро ${metro.minutes} мин ${modeLabel}`;
+    if (metro.mode === 'transport') {
+      if (metro.minutes <= 15) track(4, metroLabel);
+      else if (metro.minutes > 25) track(-5, metroLabel);
+    } else {
+      if (metro.minutes <= 10) track(10, metroLabel);
+      else if (metro.minutes <= 20) track(6, metroLabel);
+      else if (metro.minutes <= 30) track(1, metroLabel);
+      else track(-6, metroLabel);
+    }
+  }
+  if (Number.isFinite(ad?.mkadDistanceKm)) {
+    const mkadLabel = ad.mkadDistanceKm <= 0.2 ? 'в пределах МКАД' : `${formatKm(ad.mkadDistanceKm)} от МКАД`;
+    if (ad.mkadDistanceKm <= 0.2) track(4, mkadLabel);
+    else if (ad.mkadDistanceKm <= 5) track(2, mkadLabel);
+    else if (ad.mkadDistanceKm > 20) track(-6, mkadLabel);
+    else if (ad.mkadDistanceKm > 12) track(-3, mkadLabel);
+  }
+  if (sellerType === 'owner') track(2, 'собственник');
+  if (sellerType === 'agent') track(-1, 'агент');
+  if (deposit === 'no') track(1, 'без залога');
+  if (deposit === 'yes') track(-1, 'есть залог');
+  const normalizedScore = clamp(Math.round(score), 0, 100);
+  const grade = normalizedScore >= 72 ? 'хороший' : normalizedScore >= 50 ? 'средний' : 'плохой';
+  const summary = metrics
+    .sort((left, right) => right.weight - left.weight)
+    .slice(0, 4)
+    .map((item) => item.text)
+    .filter(Boolean)
+    .join(', ');
+  return {
+    grade,
+    score: normalizedScore,
+    summary,
+    price,
+    priceLabel: formatRubles(price) || compactText(ad?.price)
+  };
+}
+
 async function formatMessage(label, ad) {
   const geo = await resolvePreferredGeo(ad);
   console.log(routeDebugLine(label, geo));
   const lines = [escapeHtml(ad.href)];
   const routeUrl = yandexRouteUrl(geo.address, geo.point);
-  if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
-  if (geo.address) lines.push(`Адрес: ${escapeHtml(geo.address)}`);
   let transitMinutes = Number.isFinite(ad?.centerTransitMinutes) ? ad.centerTransitMinutes : null;
   if (transitMinutes === null) {
     const transit = await transitFromCenter(geo);
@@ -1068,6 +1205,11 @@ async function formatMessage(label, ad) {
       ad.centerTransitMinutes = transit.minutes;
     }
   }
+  const assessment = buildListingAssessment(ad, transitMinutes);
+  if (routeUrl) lines.push(`<a href="${escapeHtml(routeUrl)}">маршрут</a>`);
+  if (assessment.priceLabel) lines.push(`Цена: ${escapeHtml(assessment.priceLabel)}`);
+  lines.push(`Оценка: <b>${escapeHtml(assessment.grade)}</b>${assessment.summary ? ` — ${escapeHtml(assessment.summary)}` : ''}`);
+  if (geo.address) lines.push(`Адрес: ${escapeHtml(geo.address)}`);
   if (transitMinutes !== null) lines.push(`От Охотного ряда на транспорте: ${escapeHtml(String(transitMinutes))} мин`);
   if (Number.isFinite(ad?.mkadDistanceKm)) lines.push(`От МКАД: ${escapeHtml(formatKm(ad.mkadDistanceKm))}`);
   if (geo.point) {
