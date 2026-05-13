@@ -1053,10 +1053,11 @@ async function resolvePreferredGeo(ad) {
   if (explicitAddress && explicitAddress !== explicitLocation) {
     const explicitGeo = await geocodeExactAddress(explicitAddress);
     if (explicitGeo.address) {
+      const keepCurrentPoint = hasCoords(geo.point);
       geo = {
         address: explicitGeo.address,
-        point: explicitGeo.point || geo.point,
-        source: explicitGeo.point ? explicitGeo.source : geo.source
+        point: keepCurrentPoint ? geo.point : explicitGeo.point || geo.point,
+        source: keepCurrentPoint ? geo.source : explicitGeo.point ? explicitGeo.source : geo.source
       };
     }
   }
@@ -1410,6 +1411,14 @@ async function enrichPuppeteerAd(browser, ad, siteType, options = {}) {
               coords: itemCoordsMatch ? { lat: Number(itemCoordsMatch[1]), lon: Number(itemCoordsMatch[2]) } : null
             };
           }
+          const cianCoordinatesMatch = text.match(/"coordinates":\{"lat":([0-9.]+),"lng":([0-9.]+)\}/);
+          const cianAddressMatch = text.match(/"address":"([^"]+?)","coordinates":\{"lat":([0-9.]+),"lng":([0-9.]+)\}/);
+          if (cianCoordinatesMatch || cianAddressMatch) {
+            return {
+              address: cianAddressMatch?.[1] || '',
+              coords: cianCoordinatesMatch ? { lat: Number(cianCoordinatesMatch[1]), lon: Number(cianCoordinatesMatch[2]) } : null
+            };
+          }
           return null;
         };
         for (const script of Array.from(document.querySelectorAll('script'))) {
@@ -1430,7 +1439,11 @@ async function enrichPuppeteerAd(browser, ad, siteType, options = {}) {
       };
       const structured = readStructured();
       const geoAddress = currentSiteType === 'cian'
-        ? normalizeAddress(document.querySelector('[data-name="Geo"]')?.innerText || '')
+        ? normalizeAddress(
+          document.querySelector('[data-name="AddressContainer"]')?.innerText
+          || document.querySelector('[data-name="Geo"]')?.innerText
+          || ''
+        )
         : '';
       return {
         detail: bodyText,
