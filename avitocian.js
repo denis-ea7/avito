@@ -18,6 +18,7 @@ const {
   extractSellerType,
   extractDeposit
 } = require('./lib/filters');
+const { saveSentListing } = require('./lib/sent-listings');
 
 let playwright = null;
 try {
@@ -183,10 +184,11 @@ function extractListingId(source, url) {
 }
 
 async function sendToTelegram(bot, chatId, payload) {
+  let delivered = 0;
   try {
     if (SKIP_TELEGRAM) {
       console.log(`Telegram отключен: ${typeof payload === 'string' ? payload : payload?.text || ''}`);
-      return;
+      return { ok: true, delivered: 0 };
     }
     if (!bot) throw new Error('Telegram bot не инициализирован');
     if (!chatId) throw new Error('TG_CHAT_ID пустой');
@@ -194,17 +196,26 @@ async function sendToTelegram(bot, chatId, payload) {
     const replyMarkup = typeof payload === 'string' ? undefined : payload?.reply_markup;
     const chatIds = String(chatId).split(',').map((id) => id.trim()).filter(Boolean);
     for (const id of chatIds) {
-      const sent = await bot.sendMessage(id, text, {
-        parse_mode: 'HTML',
-        disable_web_page_preview: false,
-        reply_markup: replyMarkup
-      });
-      console.log(`Telegram доставлено: chat ${String(sent.chat.id).slice(-4)}, message ${sent.message_id}`);
+      try {
+        const sent = await bot.sendMessage(id, text, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: false,
+          reply_markup: replyMarkup
+        });
+        delivered += 1;
+        console.log(`Telegram доставлено: chat ${String(sent.chat.id).slice(-4)}, message ${sent.message_id}`);
+      } catch (e) {
+        const apiDescription = e?.response?.body?.description || e?.response?.description;
+        const apiCode = e?.response?.statusCode || e?.response?.body?.error_code;
+        console.error('Ошибка Telegram:', [apiCode, apiDescription, e?.message].filter(Boolean).join(' | '));
+      }
     }
+    return { ok: delivered > 0, delivered };
   } catch (e) {
     const apiDescription = e?.response?.body?.description || e?.response?.description;
     const apiCode = e?.response?.statusCode || e?.response?.body?.error_code;
     console.error('Ошибка Telegram:', [apiCode, apiDescription, e?.message].filter(Boolean).join(' | '));
+    return { ok: delivered > 0, delivered };
   }
 }
 
@@ -1193,6 +1204,49 @@ function buildListingAssessment(ad, transitMinutes) {
   };
 }
 
+function extractPublishedAtText(ad) {
+  const direct = compactText(ad?.publishedAtText || ad?.publishedAt || '');
+  if (direct) return direct;
+  const monthPattern = '(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)';
+  const lines = String([ad?.desc, ad?.location, ad?.title].filter(Boolean).join('\n'))
+    .split(/\n+/)
+    .map(compactText)
+    .filter(Boolean);
+  const patterns = [
+    new RegExp(`(?:сегодня|вчера)\\s+в\\s+\\d{1,2}:\\d{2}`, 'i'),
+    /\b(?:только что)\b/i,
+    /\b\d{1,2}\s*(?:мин(?:ут[аы]?|\.?)|час(?:а|ов)?|дн(?:я|ей)|недел(?:ю|и|ь)|месяц(?:а|ев)?|год(?:а|ов)?)\s+назад\b/i,
+    new RegExp(`\\b\\d{1,2}\\s+${monthPattern}(?:\\s+\\d{4})?(?:\\s+в\\s+\\d{1,2}:\\d{2})?\\b`, 'i'),
+    /\b\d{1,2}\.\d{1,2}\.\d{2,4}(?:\s+\d{1,2}:\d{2})?\b/i
+  ];
+  for (const line of lines) {
+    for (const pattern of patterns) {
+      const match = line.match(pattern);
+      if (match?.[0]) return compactText(match[0]);
+    }
+  }
+  return '';
+}
+
+function buildSentListingRecord(target, id, ad) {
+  const text = collectAdText(ad);
+  const numericPrice = extractPrice(`${ad?.price || ''} ${text}`);
+  const priceText = formatRubles(numericPrice) || compactText(ad?.price || '');
+  return {
+    id,
+    href: ad?.href || '',
+    title: compactText(ad?.title || ''),
+    label: compactText(target?.label || ''),
+    source: compactText(target?.type || ''),
+    propertyType: compactText(target?.propertyType || ''),
+    region: compactText(target?.region || ''),
+    priceText,
+    priceValue: numericPrice,
+    publishedAtText: extractPublishedAtText(ad),
+    sentAt: new Date().toISOString()
+  };
+}
+
 async function formatMessage(label, ad) {
   const geo = await resolvePreferredGeo(ad);
   console.log(routeDebugLine(label, geo));
@@ -1368,10 +1422,16 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
       continue;
     }
     if (!(await matchesAiFilter(normalizedAd, filters))) continue;
+    const payload = await formatMessage(label, normalizedAd);
+    const telegramResult = await sendToTelegram(bot, TELEGRAM_CHAT_ID, payload);
+    if (!telegramResult.ok) {
+      console.log(`Telegram не доставлено: ${label} ${id}${logUrl(normalizedAd.href)}`);
+      continue;
+    }
     sentIds.add(id);
     saveSentId(id);
     saveLatestId(latestIds, latestKey, id);
-    await sendToTelegram(bot, TELEGRAM_CHAT_ID, await formatMessage(label, normalizedAd));
+    saveSentListing(buildSentListingRecord(target, id, normalizedAd));
     console.log(`Отправлено: ${label} ${id}${logUrl(normalizedAd.href)}`);
     return true;
   }

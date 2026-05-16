@@ -4,6 +4,7 @@ const express = require('express');
 const path = require('path');
 const { spawn } = require('child_process');
 const { readConfig, writeConfig, buildSearchTargets } = require('./lib/filters');
+const { readSentListings } = require('./lib/sent-listings');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4076);
@@ -62,6 +63,12 @@ function botStatus() {
     config: publicConfig(config),
     targets: buildSearchTargets(config)
   };
+}
+
+function toFilterNumber(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function startBot() {
@@ -131,6 +138,20 @@ app.get('/api/status', (req, res) => {
 app.get('/api/config', (req, res) => {
   const config = readConfig(CONFIG_FILE);
   res.json({ config: publicConfig(config), targets: buildSearchTargets(config) });
+});
+
+app.get('/api/sent-listings', (req, res) => {
+  const priceMin = toFilterNumber(req.query.priceMin);
+  const priceMax = toFilterNumber(req.query.priceMax);
+  const limit = Math.max(1, Math.min(1000, toFilterNumber(req.query.limit) || 300));
+  const items = readSentListings()
+    .filter((item) => priceMin === null || (item.priceValue !== null && item.priceValue >= priceMin))
+    .filter((item) => priceMax === null || (item.priceValue !== null && item.priceValue <= priceMax))
+    .sort((left, right) => Date.parse(right.sentAt || 0) - Date.parse(left.sentAt || 0));
+  res.json({
+    total: items.length,
+    items: items.slice(0, limit)
+  });
 });
 
 app.put('/api/config', async (req, res) => {

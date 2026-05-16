@@ -337,6 +337,52 @@ h2 {
   min-height: 360px;
 }
 
+.sentPanel {
+  min-height: 320px;
+}
+
+.sentHeader {
+  margin-bottom: 12px;
+}
+
+.sentHeader p {
+  color: #63706c;
+  margin-bottom: 0;
+}
+
+.sentFilters {
+  margin-bottom: 12px;
+}
+
+.sentList {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.sentCard {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dce4e0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.sentCard > a {
+  color: #0f8b6d;
+  font-weight: 800;
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.sentMeta {
+  display: grid;
+  gap: 4px;
+  color: #4a5753;
+  font-size: 13px;
+}
+
 .logs {
   display: grid;
   gap: 8px;

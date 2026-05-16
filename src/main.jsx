@@ -151,6 +151,9 @@ function App() {
   const [config, setConfig] = useState(defaultConfig);
   const [status, setStatus] = useState(null);
   const [targets, setTargets] = useState([]);
+  const [sentListings, setSentListings] = useState([]);
+  const [sentTotal, setSentTotal] = useState(0);
+  const [sentFilters, setSentFilters] = useState({ priceMin: '', priceMax: '' });
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const dirtyRef = useRef(false);
@@ -170,15 +173,38 @@ function App() {
       .catch((error) => setMessage(`Ошибка статуса: ${error.message}`));
   };
 
+  const loadSentListings = () => {
+    const params = new URLSearchParams();
+    if (sentFilters.priceMin !== '') params.set('priceMin', String(sentFilters.priceMin));
+    if (sentFilters.priceMax !== '') params.set('priceMax', String(sentFilters.priceMax));
+    params.set('limit', '300');
+    toRequest(`/api/sent-listings?${params.toString()}`)
+      .then((data) => {
+        setSentListings(data.items || []);
+        setSentTotal(data.total || 0);
+      })
+      .catch((error) => setMessage(`Ошибка истории: ${error.message}`));
+  };
+
   useEffect(() => {
     loadStatus({ syncConfig: true });
     const timer = window.setInterval(loadStatus, 5000);
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    loadSentListings();
+    const timer = window.setInterval(loadSentListings, 15000);
+    return () => window.clearInterval(timer);
+  }, [sentFilters.priceMin, sentFilters.priceMax]);
+
   const updateConfig = (key, value) => {
     dirtyRef.current = true;
     setConfig((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateSentFilter = (key, value) => {
+    setSentFilters((current) => ({ ...current, [key]: value }));
   };
 
   const saveConfig = async () => {
@@ -414,6 +440,33 @@ function App() {
                 <div className="logLine" key={`${log.time}-${index}`}>
                   <time>{new Date(log.time).toLocaleTimeString('ru-RU')}</time>
                   <span><LogText log={log} /></span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel compact sentPanel">
+            <div className="sectionTitle sentHeader">
+              <div>
+                <h2>Отправлено</h2>
+                <p>{sentTotal} объявлений в базе</p>
+              </div>
+            </div>
+            <div className="grid two sentFilters">
+              <NumberInput label="Цена от" value={sentFilters.priceMin} onChange={(value) => updateSentFilter('priceMin', value)} />
+              <NumberInput label="Цена до" value={sentFilters.priceMax} onChange={(value) => updateSentFilter('priceMax', value)} />
+            </div>
+            <div className="sentList">
+              {sentListings.length === 0 && <p>Отправленных объявлений пока нет</p>}
+              {sentListings.map((item) => (
+                <div className="sentCard" key={item.id}>
+                  <a href={item.href} target="_blank" rel="noreferrer">{item.title || item.href}</a>
+                  <div className="sentMeta">
+                    <strong>{item.priceText || 'Цена не определена'}</strong>
+                    <span>{item.label}</span>
+                    <span>Публикация: {item.publishedAtText || 'нет данных'}</span>
+                    <span>Отправлено: {item.sentAt ? new Date(item.sentAt).toLocaleString('ru-RU') : 'нет данных'}</span>
+                  </div>
                 </div>
               ))}
             </div>

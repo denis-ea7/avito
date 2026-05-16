@@ -29,6 +29,7 @@ COPYFILE_DISABLE=1 git ls-files -z | COPYFILE_DISABLE=1 tar \
   --null \
   --exclude='chrome-profile/*' \
   --exclude='sent-ids.txt' \
+  --exclude='sent-listings.json' \
   --exclude='.DS_Store' \
   -czf "$TMP_ARCHIVE" \
   --files-from -
