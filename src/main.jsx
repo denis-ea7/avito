@@ -207,6 +207,8 @@ function App() {
     setSentFilters((current) => ({ ...current, [key]: value }));
   };
 
+  const sentRouteHref = (item) => item.routeUrl || `/api/sent-listings/route?href=${encodeURIComponent(item.href)}&source=${encodeURIComponent(item.source || '')}`;
+
   const openListingCard = (event, href) => {
     if (!href) return;
     if (event.target.closest('a')) return;
@@ -476,7 +478,7 @@ function App() {
                     <span>{item.label}</span>
                     <span>Публикация: {item.publishedAtText || 'нет данных'}</span>
                     <span>Отправлено: {item.sentAt ? new Date(item.sentAt).toLocaleString('ru-RU') : 'нет данных'}</span>
-                    {item.routeUrl && <a className="sentRoute" href={item.routeUrl} target="_blank" rel="noreferrer">маршрут</a>}
+                    <a className="sentRoute" href={sentRouteHref(item)} target="_blank" rel="noreferrer">маршрут</a>
                   </div>
                 </div>
               ))}

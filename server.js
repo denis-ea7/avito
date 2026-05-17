@@ -4,7 +4,7 @@ const express = require('express');
 const path = require('path');
 const { spawn } = require('child_process');
 const { readConfig, writeConfig, buildSearchTargets } = require('./lib/filters');
-const { readSentListings } = require('./lib/sent-listings');
+const { readSentListings, saveSentListing } = require('./lib/sent-listings');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4076);
@@ -69,6 +69,41 @@ function toFilterNumber(value) {
   if (value === '' || value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function detectSourceFromHref(href) {
+  const url = String(href || '');
+  if (/avito/i.test(url)) return 'avito';
+  if (/cian/i.test(url)) return 'cian';
+  if (/yandex/i.test(url)) return 'yandex';
+  if (/domclick/i.test(url)) return 'domclick';
+  return '';
+}
+
+async function resolveListingRoute(href, source, title = '', priceText = '') {
+  const mod = require('./avitocian');
+  const siteType = source || detectSourceFromHref(href);
+  if (!href || !siteType) return '';
+  const ad = { href, title, price: priceText, location: '', desc: '' };
+  if (siteType === 'avito' || siteType === 'cian') {
+    const { browser, profileDir } = await mod.launchPuppeteer(siteType);
+    try {
+      const detailed = await mod.enrichPuppeteerAd(browser, ad, siteType);
+      const geo = await mod.resolvePreferredGeo(detailed);
+      return mod.yandexRouteUrl(geo.address, geo.point);
+    } finally {
+      await mod.closePuppeteer(browser, profileDir);
+    }
+  }
+  const { browser, context } = await mod.launchPlaywright(siteType);
+  try {
+    const detailed = await mod.enrichPlaywrightAd(context, ad, siteType);
+    const geo = await mod.resolvePreferredGeo(detailed);
+    return mod.yandexRouteUrl(geo.address, geo.point);
+  } finally {
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
 }
 
 function startBot() {
@@ -152,6 +187,23 @@ app.get('/api/sent-listings', (req, res) => {
     total: items.length,
     items: items.slice(0, limit)
   });
+});
+
+app.get('/api/sent-listings/route', async (req, res) => {
+  try {
+    const href = String(req.query.href || '').trim();
+    const source = String(req.query.source || '').trim();
+    if (!href) return res.status(400).send('href is required');
+    const items = readSentListings();
+    const existing = items.find((item) => item.href === href);
+    if (existing?.routeUrl) return res.redirect(existing.routeUrl);
+    const routeUrl = await resolveListingRoute(href, source || existing?.source, existing?.title, existing?.priceText);
+    if (!routeUrl) return res.status(404).send('route not found');
+    if (existing) saveSentListing({ ...existing, routeUrl });
+    return res.redirect(routeUrl);
+  } catch (error) {
+    return res.status(500).send(error.message || 'route error');
+  }
 });
 
 app.put('/api/config', async (req, res) => {
