@@ -207,6 +207,12 @@ function App() {
     setSentFilters((current) => ({ ...current, [key]: value }));
   };
 
+  const openListingCard = (event, href) => {
+    if (!href) return;
+    if (event.target.closest('a')) return;
+    window.open(href, '_blank', 'noopener,noreferrer');
+  };
+
   const saveConfig = async () => {
     setBusy(true);
     setMessage('');
@@ -459,13 +465,18 @@ function App() {
             <div className="sentList">
               {sentListings.length === 0 && <p>Отправленных объявлений пока нет</p>}
               {sentListings.map((item) => (
-                <div className="sentCard" key={item.id}>
+                <div
+                  className="sentCard"
+                  key={item.id}
+                  onClick={(event) => openListingCard(event, item.href)}
+                >
                   <a href={item.href} target="_blank" rel="noreferrer">{item.title || item.href}</a>
                   <div className="sentMeta">
                     <strong>{item.priceText || 'Цена не определена'}</strong>
                     <span>{item.label}</span>
                     <span>Публикация: {item.publishedAtText || 'нет данных'}</span>
                     <span>Отправлено: {item.sentAt ? new Date(item.sentAt).toLocaleString('ru-RU') : 'нет данных'}</span>
+                    {item.routeUrl && <a className="sentRoute" href={item.routeUrl} target="_blank" rel="noreferrer">маршрут</a>}
                   </div>
                 </div>
               ))}

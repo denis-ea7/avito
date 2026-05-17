@@ -1228,13 +1228,16 @@ function extractPublishedAtText(ad) {
   return '';
 }
 
-function buildSentListingRecord(target, id, ad) {
+async function buildSentListingRecord(target, id, ad) {
   const text = collectAdText(ad);
   const numericPrice = extractPrice(`${ad?.price || ''} ${text}`);
   const priceText = formatRubles(numericPrice) || compactText(ad?.price || '');
+  const geo = await resolvePreferredGeo(ad);
+  const routeUrl = yandexRouteUrl(geo.address, geo.point);
   return {
     id,
     href: ad?.href || '',
+    routeUrl,
     title: compactText(ad?.title || ''),
     label: compactText(target?.label || ''),
     source: compactText(target?.type || ''),
@@ -1431,7 +1434,7 @@ async function emitFirstMatching(target, ads, filters, sentIds, latestIds, bot, 
     sentIds.add(id);
     saveSentId(id);
     saveLatestId(latestIds, latestKey, id);
-    saveSentListing(buildSentListingRecord(target, id, normalizedAd));
+    saveSentListing(await buildSentListingRecord(target, id, normalizedAd));
     console.log(`Отправлено: ${label} ${id}${logUrl(normalizedAd.href)}`);
     return true;
   }

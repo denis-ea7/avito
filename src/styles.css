@@ -367,6 +367,7 @@ h2 {
   border: 1px solid #dce4e0;
   border-radius: 8px;
   padding: 12px;
+  cursor: pointer;
 }
 
 .sentCard > a {
@@ -381,6 +382,13 @@ h2 {
   gap: 4px;
   color: #4a5753;
   font-size: 13px;
+}
+
+.sentRoute {
+  width: fit-content;
+  color: #0f8b6d;
+  font-weight: 800;
+  text-decoration: underline;
 }
 
 .logs {
