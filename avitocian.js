@@ -1854,12 +1854,16 @@ process.on('SIGTERM', () => {
 module.exports = {
   launchPuppeteer,
   closePuppeteer,
+  launchPlaywright,
   enrichPuppeteerAd,
+  enrichPlaywrightAd,
   formatMessage,
+  yandexRouteUrl,
   geocodeAd,
   resolvePreferredGeo,
   transitFromCenter,
-  distanceFromMkad
+  distanceFromMkad,
+  buildSentListingRecord
 };
 
 if (require.main === module) {
