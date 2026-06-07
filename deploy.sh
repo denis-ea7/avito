@@ -53,6 +53,13 @@ npm run build
 if ! command -v pm2 >/dev/null 2>&1; then
   npm install -g pm2
 fi
+if command -v systemctl >/dev/null 2>&1; then
+  if ! systemctl list-unit-files --type=service 2>/dev/null | grep -q '^pm2-root\.service'; then
+    pm2 startup systemd -u root --hp /root >/dev/null
+  fi
+  systemctl enable pm2-root >/dev/null 2>&1 || true
+  systemctl start pm2-root >/dev/null 2>&1 || true
+fi
 if screen -ls | grep -q '[.]avito'; then
   screen -S avito -X quit || true
 fi
